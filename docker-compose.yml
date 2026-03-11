@@ -1,0 +1,42 @@
+version: '3.8'
+
+services:
+  rclone-ui:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: rclone-webui
+    image: speedbits-rclone-ui:latest
+    restart: unless-stopped
+    ports:
+      - "3000:3000"    # Frontend
+      - "5572:5572"    # Rclone API
+    environment:
+      - RCLONE_USER=admin
+      - RCLONE_PASS=admin
+      - RCLONE_PORT=5572
+      - FRONTEND_PORT=3000
+    volumes:
+      # Rclone configuration (stores your cloud storage credentials)
+      - ./rclone-config:/config/rclone
+      # Data directory (optional - for local file access)
+      - ./data:/data
+      # Or mount your entire home directory
+      # - $HOME:/data
+    networks:
+      - rclone-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+networks:
+  rclone-net:
+    driver: bridge
+
+volumes:
+  rclone-config:
+  data:
+

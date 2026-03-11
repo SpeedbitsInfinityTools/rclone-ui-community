@@ -1,0 +1,7 @@
+{
+  "defaultBackendUrl": "http://localhost:5572",
+  "backendPort": 5572,
+  "generatedAt": "development",
+  "installedBy": "development-mode"
+}
+

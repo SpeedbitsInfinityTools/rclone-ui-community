@@ -1,0 +1,160 @@
+# Rclone Director UI - Pre-built Frontend Dockerfile
+# =============================================================================
+# This Dockerfile expects the frontend to be pre-built (build/ directory exists)
+# Used for multi-arch builds to avoid QEMU issues with npm/node
+#
+# Usage:
+#   1. Build frontend locally: npm ci && npm run build
+#   2. Build Docker image: docker build -f docker/Dockerfile.prebuild -t rclone-director-ui .
+# =============================================================================
+
+ARG VERSION=dev
+
+# ============================================================================
+# Stage 1: Prepare Director Backend
+# ============================================================================
+FROM node:18-alpine AS backend-builder
+
+WORKDIR /app
+
+# Copy backend package files
+COPY rclone-director/package*.json ./
+RUN npm ci --only=production
+
+# Copy backend source
+COPY rclone-director/server.js ./
+COPY rclone-director/auth.js ./
+COPY rclone-director/config ./config
+COPY rclone-director/services ./services
+COPY rclone-director/routes ./routes
+COPY rclone-director/oauth ./oauth
+COPY rclone-director/scripts ./scripts
+
+# Always prepare as community edition (stub multi-server routes)
+# Commercial features are enabled at runtime via file injection
+ENV EDITION=community
+RUN node scripts/prepare-edition.js
+
+# ============================================================================
+# Stage 2: Final All-in-One Image
+# ============================================================================
+FROM node:18-alpine
+
+ARG VERSION=dev
+
+# Default to community edition (can be overridden at runtime)
+ENV EDITION=community
+
+# Install nginx and utilities
+RUN apk add --no-cache \
+    nginx \
+    curl \
+    bash \
+    ca-certificates \
+    && rm -rf /var/cache/apk/*
+
+# Create directories
+RUN mkdir -p \
+    /app/backend \
+    /app/frontend \
+    /config \
+    /logs \
+    /run/nginx \
+    /app/commercial
+
+WORKDIR /app
+
+# Copy backend from builder (includes node_modules)
+COPY --from=backend-builder /app /app/backend
+
+# Copy PRE-BUILT frontend (must exist before running docker build)
+COPY build /app/frontend
+
+# Create nginx configuration for all-in-one
+RUN cat > /etc/nginx/http.d/default.conf <<'EOF'
+server {
+    listen 80;
+    server_name _;
+    
+    # Allow large file uploads (for rclone operations)
+    client_max_body_size 10G;
+    client_body_timeout 300s;
+    
+    # Frontend
+    root /app/frontend;
+    index index.html;
+    
+    # Serve static files with proper caching
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+    
+    # Explicit handling for static assets (JS, CSS, images, fonts)
+    location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot|webp)$ {
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+        access_log off;
+        try_files $uri =404;
+    }
+    
+    # Handle static media folder (for webpack bundled assets)
+    location /static/ {
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+        access_log off;
+        try_files $uri =404;
+    }
+    
+    # Proxy API requests to backend
+    location /api/ {
+        proxy_pass http://127.0.0.1:5573/;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_cache_bypass $http_upgrade;
+        
+        # Timeouts for long-running rclone operations
+        proxy_connect_timeout 300s;
+        proxy_send_timeout 300s;
+        proxy_read_timeout 300s;
+    }
+}
+EOF
+
+# Copy startup script (using separate file is more reliable than heredoc)
+COPY docker/start-container.sh /app/start.sh
+RUN chmod +x /app/start.sh
+
+# Environment variables
+ENV PORT=5573 \
+    DATA_DIR=/config \
+    LOGS_DIR=/logs \
+    NODE_ENV=production \
+    VERSION=${VERSION}
+
+# Expose ports
+EXPOSE 80 5573
+
+# Volumes
+# /config - persistent data (servers.json, etc.)
+# /logs - log files
+# /app/commercial - mount point for injected commercial files
+VOLUME ["/config", "/logs", "/app/commercial"]
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+    CMD curl -f http://localhost:80/ && curl -f http://localhost:5573/director/health || exit 1
+
+# Labels
+LABEL io.speedbits.rclone.version="${VERSION}" \
+      io.speedbits.rclone.type="all-in-one-prebuild" \
+      org.opencontainers.image.title="Rclone Director UI" \
+      org.opencontainers.image.description="All-in-One: React UI + Director API - Pre-built frontend" \
+      org.opencontainers.image.vendor="SpeedBits / Smart In Venture"
+
+# Start everything
+CMD ["/app/start.sh"]

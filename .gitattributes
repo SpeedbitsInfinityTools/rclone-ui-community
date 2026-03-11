@@ -1,0 +1,15 @@
+# Ensure shell scripts always have Unix line endings (LF)
+# This prevents "not found" errors when running in Docker/Linux
+*.sh text eol=lf
+
+# Dockerfiles should also use LF
+Dockerfile* text eol=lf
+
+# Common text files
+*.js text
+*.json text
+*.css text
+*.html text
+*.yml text
+*.yaml text
+*.md text

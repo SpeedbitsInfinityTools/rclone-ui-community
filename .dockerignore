@@ -1,0 +1,80 @@
+# Dependencies
+node_modules
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json
+
+# Development/build resources
+_resources/
+md-files/
+screenshots/
+
+# Deployment scripts (not needed in container)
+deployment/
+RcloneAuthApp/
+
+# Debugging scripts (not needed in container)
+debugging/
+
+# Test files
+**/*.test.js
+**/__tests__/
+Utils/
+
+# Build output
+# NOTE: build/ is NOT excluded because Dockerfile.prebuild needs the pre-built frontend
+# build/
+dist/
+.cache/
+
+# Testing
+coverage/
+.nyc_output/
+*.log
+
+# Environment
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# CI/CD
+.github/
+
+# Documentation
+*.md
+!README.md
+docs/
+screenshots/
+
+# Docker
+docker-compose.yml
+docker-compose*.yml
+Dockerfile*
+.dockerignore
+
+# Misc
+.editorconfig
+.eslintrc*
+.prettierrc*
+webui.sh
+

@@ -1,0 +1,12 @@
+services:
+  rclone-director-ui:
+    image: ghcr.io/speedbitsinfinitytools/rclone-director-ui:latest
+    container_name: rclone-director-ui
+    ports:
+      - "8080:80"
+    volumes:
+      - ./config:/config
+      - ./logs:/logs
+    environment:
+      - ADMIN_PASSWORD=changeme
+    restart: unless-stopped

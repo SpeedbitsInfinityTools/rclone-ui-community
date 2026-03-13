@@ -219,13 +219,14 @@ For commercial use or to unlock **Multi-Server Mode**, visit **[www.speedbits.io
 
 | Feature | Community | Commercial |
 |---------|:---------:|:----------:|
-| Single Server Mode | Yes | Yes |
-| All Cloud Providers | Yes | Yes |
-| Remote Management | Yes | Yes |
-| Mount Management | Yes | Yes |
-| **Multi-Server Mode** | No | Yes |
-| Add Multiple Servers | No | Yes |
-| Centralized Management | No | Yes |
+| Single Server Mode | ✅ | ✅ |
+| All Cloud Providers | ✅ | ✅ |
+| Remote Management | ✅ | ✅ |
+| Mount Management | ✅ | ✅ |
+| File Explorer | ✅ | ✅ |
+| **Multi-Server Mode** | ❌ | ✅ |
+| Add Multiple Servers | ❌ | ✅ |
+| Centralized Management | ❌ | ✅ |
 
 **Multi-Server Mode advantages:**
 - **Centralized management** - Manage Rclone on multiple servers from one UI

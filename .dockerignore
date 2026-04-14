@@ -12,7 +12,7 @@ md-files/
 screenshots/
 
 # Deployment scripts (not needed in container)
-deployment/
+deploy/
 RcloneAuthApp/
 
 # Debugging scripts (not needed in container)

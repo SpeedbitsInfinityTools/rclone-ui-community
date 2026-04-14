@@ -3,6 +3,10 @@ body{
   font-family: Noto Sans, sans-serif;
 }
 
+.animated.fadeIn {
+  padding-top: 15px;
+}
+
 .card, .card-header, .card-body {
   border-radius: 0 !important;
 }

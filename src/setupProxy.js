@@ -4,20 +4,20 @@
  */
 const { createProxyMiddleware } = require('http-proxy-middleware');
 
+const DIRECTOR_PORT = process.env.REACT_APP_DIRECTOR_PORT || '5573';
+const DIRECTOR_URL = `http://127.0.0.1:${DIRECTOR_PORT}`;
+
 module.exports = function(app) {
-  // Proxy all /api requests to Rclone Director
-  // Use 127.0.0.1 instead of localhost to avoid IPv6 issues
   app.use(
     '/api',
     createProxyMiddleware({
-      target: 'http://127.0.0.1:5573',
+      target: DIRECTOR_URL,
       changeOrigin: true,
       pathRewrite: {
-        '^/api': '' // Remove /api prefix when forwarding
+        '^/api': ''
       },
       onProxyReq: (proxyReq, req, res) => {
-        // Log proxied requests for debugging
-        console.log(`[PROXY] ${req.method} ${req.url} -> http://127.0.0.1:5573${req.url.replace('/api', '')}`);
+        console.log(`[PROXY] ${req.method} ${req.url} -> ${DIRECTOR_URL}${req.url.replace('/api', '')}`);
       },
       onError: (err, req, res) => {
         console.error(`[PROXY ERROR] ${req.url}:`, err.message);

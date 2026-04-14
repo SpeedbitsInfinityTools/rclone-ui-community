@@ -24,6 +24,8 @@ import {isEmpty, validateDuration, validateInt, validateSizeSuffix} from "../../
 import {toast} from "react-toastify";
 import {createMount as directorCreateMount} from "../../utils/API/director";
 import axiosInstance from "../../utils/API/API";
+import PathSelectorField from "./PathSelectorField";
+import ContainerSelector from "./ContainerSelector";
 
 const OptionFormInput = ({attr, changeHandler, currentValues, isValidMap, errorsMap}) => {
     const labelValue = `${attr.Name}`;
@@ -105,7 +107,8 @@ const NewMountModal = (props) => {
         buttonLabel,
         className,
         okHandle,
-        refreshList
+        refreshList,
+        disabled = false
 
     } = props;
 
@@ -120,6 +123,8 @@ const NewMountModal = (props) => {
     const [showAdvanced, setShowAdvanced] = useState(false);
     
     const [permanent, setPermanent] = useState(true); // Default to permanent (survives reboot)
+    
+    const [readOnly, setReadOnly] = useState(false);
     
     // Bandwidth limiting
     const [bandwidthLimit, setBandwidthLimit] = useState(0); // 0 = unlimited
@@ -137,6 +142,10 @@ const NewMountModal = (props) => {
     
     // Creating mount
     const [isCreating, setIsCreating] = useState(false);
+    
+    const [showContainerSelector, setShowContainerSelector] = useState(false);
+    const [selectedContainers, setSelectedContainers] = useState(new Set());
+    const [totalContainers, setTotalContainers] = useState(0);
     
     // Mount result modal
     const [showMountResultModal, setShowMountResultModal] = useState(false);
@@ -178,6 +187,10 @@ const NewMountModal = (props) => {
             setBrowserPath("");
             setSourceSubfolder("");
             setTestResult(null);
+            setReadOnly(false);
+            setShowContainerSelector(false);
+            setSelectedContainers(new Set());
+            setTotalContainers(0);
         }
     };
     
@@ -201,6 +214,17 @@ const NewMountModal = (props) => {
         }
         
         return normalized;
+    };
+
+    const buildFsPath = (baseFs, subPath = '') => {
+        const colonIndex = baseFs.indexOf(':');
+        if (colonIndex === -1) {
+            return subPath ? `${baseFs}:${subPath}` : `${baseFs}:`;
+        }
+        if (colonIndex === baseFs.length - 1) {
+            return subPath ? `${baseFs}${subPath}` : baseFs;
+        }
+        return subPath ? `${baseFs}/${subPath}` : baseFs;
     };
     
     // Browse folders in the remote
@@ -226,20 +250,7 @@ const NewMountModal = (props) => {
                 return;
             }
             
-            // Check if mountFs already has a path component (contains : followed by something)
-            const colonIndex = mountFs.indexOf(':');
-            let fullFs;
-            
-            if (colonIndex === -1) {
-                // No colon - add one
-                fullFs = normalizedPath ? `${mountFs}:${normalizedPath}` : `${mountFs}:`;
-            } else if (colonIndex === mountFs.length - 1) {
-                // Ends with colon (e.g., "remote:")
-                fullFs = normalizedPath ? `${mountFs}${normalizedPath}` : mountFs;
-            } else {
-                // Has colon with path (e.g., "remote:bucket")
-                fullFs = normalizedPath ? `${mountFs}/${normalizedPath}` : mountFs;
-            }
+            const fullFs = buildFsPath(mountFs, normalizedPath);
             
             const response = await axiosInstance.post('operations/list', {
                 fs: fullFs,
@@ -280,20 +291,7 @@ const NewMountModal = (props) => {
                 return;
             }
             
-            // Construct the full FS path correctly (same logic as browseFolders)
-            const colonIndex = mountFs.indexOf(':');
-            let finalFs;
-            
-            if (colonIndex === -1) {
-                // No colon - add one
-                finalFs = normalizedSubfolder ? `${mountFs}:${normalizedSubfolder}` : `${mountFs}:`;
-            } else if (colonIndex === mountFs.length - 1) {
-                // Ends with colon (e.g., "remote:")
-                finalFs = normalizedSubfolder ? `${mountFs}${normalizedSubfolder}` : mountFs;
-            } else {
-                // Has colon with path (e.g., "remote:bucket")
-                finalFs = normalizedSubfolder ? `${mountFs}/${normalizedSubfolder}` : mountFs;
-            }
+            const finalFs = buildFsPath(mountFs, normalizedSubfolder);
             
             const result = {
                 connection: false,
@@ -365,11 +363,16 @@ const NewMountModal = (props) => {
             throw new Error("Ok handle is null");
         }
 
+        // If containers are selected, do bulk mount instead
+        if (selectedContainers.size > 0) {
+            return handleBulkMount();
+        }
+
         // Check if we have backend URL configured
         const backendUrl = sessionStorage.getItem('ipAddress');
         
         if (!backendUrl) {
-            toast.error("Session expired. Please log in again.", { autoClose: false });
+            toast.error("Session expired. Please log in again.");
             window.location.href = '/#/login';
             return;
         }
@@ -391,7 +394,13 @@ const NewMountModal = (props) => {
         // Add allow_other to mount options to allow all users (including root) to access the mount
         const finalMountOptions = {
             ...mountOptionsValues,
-            AllowOther: true  // Enable access for all users (requires user_allow_other in /etc/fuse.conf)
+            AllowOther: true
+        };
+        
+        // Apply read-only flag to VFS options
+        const finalVfsOptions = {
+            ...vfsOptionsValues,
+            ...(readOnly ? { ReadOnly: true } : {})
         };
         
         // Add bandwidth limit if specified (0 = unlimited)
@@ -416,19 +425,7 @@ const NewMountModal = (props) => {
                 return;
             }
             
-            const colonIndex = mountFs.indexOf(':');
-            let fs;
-            
-            if (colonIndex === -1) {
-                // No colon - add one
-                fs = normalizedSubfolder ? `${mountFs}:${normalizedSubfolder}` : `${mountFs}:`;
-            } else if (colonIndex === mountFs.length - 1) {
-                // Ends with colon (e.g., "remote:")
-                fs = normalizedSubfolder ? `${mountFs}${normalizedSubfolder}` : mountFs;
-            } else {
-                // Has colon with path (e.g., "remote:bucket")
-                fs = normalizedSubfolder ? `${mountFs}/${normalizedSubfolder}` : mountFs;
-            }
+            const fs = buildFsPath(mountFs, normalizedSubfolder);
             
             // Get the currently selected server ID from localStorage
             const currentServerId = localStorage.getItem('RCLONE_LAST_SERVER_ID');
@@ -438,15 +435,16 @@ const NewMountModal = (props) => {
                 fs,
                 mountPoint,
                 mountType: "",
-                vfsOpt: vfsOptionsValues,
+                vfsOpt: finalVfsOptions,
                 mountOpt: finalMountOptions,
-                permanent,  // Will survive reboot if true
-                serverId: currentServerId  // Use the currently selected server
+                permanent,
+                serverId: currentServerId
             });
             
             const permanentText = permanent ? "permanent - survives reboot" : "temporary";
             const bandwidthText = bandwidthLimit > 0 ? `, bandwidth: ${bandwidthLimit}${bandwidthUnit}/s` : "";
-            const successMsg = `Successfully mounted ${fs} to ${mountPoint} (${permanentText}${bandwidthText})`;
+            const accessText = readOnly ? ", read-only" : "";
+            const successMsg = `Successfully mounted ${fs} to ${mountPoint} (${permanentText}${accessText}${bandwidthText})`;
             messages.push({
                 type: 'success',
                 text: successMsg
@@ -464,7 +462,12 @@ const NewMountModal = (props) => {
                 refreshList();
             }
         } catch (mountError) {
-            const mountErrorMsg = mountError.response?.data?.error || mountError.message;
+            const errorData = mountError.response?.data;
+            let mountErrorMsg = errorData?.error || mountError.message;
+            const detailedError = errorData?.details?.error || errorData?.message || errorData?.details;
+            if (detailedError && typeof detailedError === 'string' && detailedError !== mountErrorMsg) {
+                mountErrorMsg += `\n${detailedError}`;
+            }
             messages.push({
                 type: 'error',
                 text: `Failed to create mount: ${mountErrorMsg}`
@@ -480,6 +483,75 @@ const NewMountModal = (props) => {
     const closeMountResultModal = () => {
         setShowMountResultModal(false);
         setMountResultMessages([]);
+    }
+    
+    const handleBulkMount = async () => {
+        if (selectedContainers.size === 0) return;
+        
+        setIsCreating(true);
+        const messages = [];
+        const currentServerId = localStorage.getItem('RCLONE_LAST_SERVER_ID');
+        const finalMountOptBase = {
+            ...mountOptionsValues,
+            AllowOther: true
+        };
+        if (bandwidthLimit > 0) {
+            finalMountOptBase.BwLimit = `${bandwidthLimit}${bandwidthUnit}`;
+        }
+        const finalVfsOptBase = {
+            ...vfsOptionsValues,
+            ...(readOnly ? { ReadOnly: true } : {})
+        };
+        
+        const basePath = mountPoint || '/mnt';
+        
+        for (const containerName of selectedContainers) {
+            try {
+                const normalizedContainer = normalizeSubfolderPath(containerName);
+                if (!normalizedContainer && containerName && containerName.trim() !== '') {
+                    throw new Error(`Invalid container path: ${containerName}`);
+                }
+                const fs = buildFsPath(mountFs, normalizedContainer);
+                const safeName = containerName.replace(/[^a-zA-Z0-9._-]/g, '_');
+                const containerMountPoint = `${basePath}/${safeName}`.replace(/\/+/g, '/');
+                
+                await directorCreateMount({
+                    fs,
+                    mountPoint: containerMountPoint,
+                    mountType: "",
+                    vfsOpt: finalVfsOptBase,
+                    mountOpt: finalMountOptBase,
+                    permanent,
+                    serverId: currentServerId
+                });
+                
+                messages.push({
+                    type: 'success',
+                    text: `Mounted ${containerName} → ${containerMountPoint}`
+                });
+            } catch (err) {
+                const errorData = err.response?.data;
+                let errMsg = errorData?.error || err.message;
+                const detailedError = errorData?.details?.error || errorData?.message || errorData?.details;
+                if (detailedError && typeof detailedError === 'string' && detailedError !== errMsg) {
+                    errMsg += `\n${detailedError}`;
+                }
+                messages.push({
+                    type: 'error',
+                    text: `Failed to mount ${containerName}: ${errMsg}`
+                });
+            }
+        }
+        
+        setIsCreating(false);
+        setMountResultMessages(messages);
+        setShowMountResultModal(true);
+        
+        const successes = messages.filter(m => m.type === 'success').length;
+        if (successes > 0) {
+            toggle();
+            if (refreshList) refreshList();
+        }
     }
 
     const isCreateDisabled = () => {
@@ -560,29 +632,57 @@ const NewMountModal = (props) => {
 
     return (
         <div data-test="newMountModalComponent">
-            <Button color="primary" onClick={toggle}>{buttonLabel}</Button>
+            <Button color="primary" onClick={toggle} disabled={disabled}>{buttonLabel}</Button>
             <Modal isOpen={modal} toggle={toggle} className={className} size={showAdvanced ? "xl" : "lg"} backdrop="static">
                 <ModalHeader toggle={toggle}>New Mount</ModalHeader>
                 <ModalBody>
                     <FormGroup row>
                         <Label for={"mountFs"} sm={3}><strong>Remote / Filesystem</strong></Label>
                         <Col sm={9}>
-                            <RemotesList
-                                remoteName={mountFs}
-                                alwaysRenderSuggestions={false}
-                                immediateUpdate={true}
-                                handleChangeRemoteName={(name) => {
-                                    setMountFs(name);
-                                    if (!mountPoint || mountPoint.startsWith('/mnt/')) {
-                                        setMountPoint(generateMountPoint(name));
-                                    }
-                                    // Reset subfolder when remote changes
-                                    setSourceSubfolder("");
-                                    setShowBrowser(false);
-                                    setBrowserItems([]);
-                                    setTestResult(null);
-                                }}
-                            />
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                <div style={{ flex: 1 }}>
+                                    <RemotesList
+                                        remoteName={mountFs}
+                                        alwaysRenderSuggestions={false}
+                                        immediateUpdate={true}
+                                        handleChangeRemoteName={(name) => {
+                                            setMountFs(name);
+                                            if (!mountPoint || mountPoint.startsWith('/mnt/')) {
+                                                setMountPoint(generateMountPoint(name));
+                                            }
+                                            setSourceSubfolder("");
+                                            setShowBrowser(false);
+                                            setBrowserItems([]);
+                                            setTestResult(null);
+                                            setSelectedContainers(new Set());
+                                            setTotalContainers(0);
+                                            setShowContainerSelector(false);
+                                        }}
+                                    />
+                                </div>
+                                {mountFs && (
+                                    <Button
+                                        color="link"
+                                        size="sm"
+                                        onClick={() => {
+                                            setMountFs("");
+                                            setMountPoint("");
+                                            setSourceSubfolder("");
+                                            setShowBrowser(false);
+                                            setBrowserItems([]);
+                                            setTestResult(null);
+                                            setSelectedContainers(new Set());
+                                            setTotalContainers(0);
+                                            setShowContainerSelector(false);
+                                            setReadOnly(false);
+                                        }}
+                                        title="Clear selection"
+                                        style={{ padding: '2px 6px', color: '#dc3545', fontSize: '18px', lineHeight: 1 }}
+                                    >
+                                        <i className="fa fa-times" />
+                                    </Button>
+                                )}
+                            </div>
                             <small className="form-text text-muted">
                                 Select the remote you want to mount
                             </small>
@@ -724,23 +824,15 @@ const NewMountModal = (props) => {
                     {mountFs && <FormGroup row>
                         <Label for={"mountPoint"} sm={3} style={{fontWeight: 'bold', color: '#000'}}>Mount Point *</Label>
                         <Col sm={9}>
-                            <Input type={"text"} value={mountPoint}
-                                   name={"mountPoint"}
-                                   id={"mountPoint"} 
-                                   onChange={e => setMountPoint(e.target.value)} 
-                                   required={true}
-                                   style={{
-                                       border: '2px solid #20a8d8',
-                                       fontWeight: 'bold',
-                                       fontSize: '16px'
-                                   }}>
-
-                            </Input>
+                            <PathSelectorField
+                                value={mountPoint}
+                                onChange={setMountPoint}
+                                placeholder="/mnt/remote"
+                            />
                             <small className="form-text text-muted">
-                                Path where the remote will be mounted. For /mnt/ locations, you may need to create the directory manually with sudo.
+                                Path where the remote will be mounted. Click <strong>Browse</strong> to explore the filesystem and create folders.
                             </small>
                             <FormFeedback/>
-
                         </Col>
                     </FormGroup>}
                     
@@ -760,6 +852,28 @@ const NewMountModal = (props) => {
                                 <small className="form-text text-muted" style={{marginTop: '5px'}}>
                                     When checked, this mount will be automatically recreated after system reboot. 
                                     Perfect for backup systems that need persistent access to cloud storage.
+                                </small>
+                            </FormGroup>
+                        </Col>
+                    </FormGroup>}
+                    
+                    {mountFs && <FormGroup row>
+                        <Label sm={3}></Label>
+                        <Col sm={9}>
+                            <FormGroup check>
+                                <Label check>
+                                    <Input 
+                                        type="checkbox" 
+                                        checked={readOnly} 
+                                        onChange={(e) => setReadOnly(e.target.checked)}
+                                    />
+                                    {' '}
+                                    <strong>Mount read-only</strong>
+                                    {readOnly && <Badge color="warning" style={{marginLeft: '8px', fontSize: '11px'}}>RO</Badge>}
+                                </Label>
+                                <small className="form-text text-muted" style={{marginTop: '5px'}}>
+                                    When checked, the mount will be read-only. No files can be created, modified, or deleted through this mount point.
+                                    This is a safeguard to protect cloud data from accidental changes.
                                 </small>
                             </FormGroup>
                         </Col>
@@ -796,6 +910,88 @@ const NewMountModal = (props) => {
                             </small>
                         </Col>
                     </FormGroup>}
+
+                    {mountFs && (
+                        <FormGroup row>
+                            <Label sm={3}></Label>
+                            <Col sm={9}>
+                                {!showContainerSelector ? (
+                                    <Button
+                                        color="info"
+                                        outline
+                                        size="sm"
+                                        onClick={() => setShowContainerSelector(true)}
+                                    >
+                                        <i className="fa fa-th-list" style={{marginRight: '4px'}} />
+                                        Select Individual Containers/Buckets
+                                    </Button>
+                                ) : (
+                                    <>
+                                        <Button
+                                            color="secondary"
+                                            outline
+                                            size="sm"
+                                            onClick={() => {
+                                                setShowContainerSelector(false);
+                                                setSelectedContainers(new Set());
+                                                setTotalContainers(0);
+                                            }}
+                                            style={{marginBottom: '10px'}}
+                                        >
+                                            <i className="fa fa-times" style={{marginRight: '4px'}} />
+                                            Hide Container Selector
+                                        </Button>
+                                        <ContainerSelector
+                                            remoteName={mountFs}
+                                            mountPoint={mountPoint}
+                                            readOnly={readOnly}
+                                            selected={selectedContainers}
+                                            onSelectionChange={(newSelected, total) => {
+                                                setSelectedContainers(newSelected);
+                                                setTotalContainers(total);
+                                            }}
+                                        />
+                                    </>
+                                )}
+                                <small className="form-text text-muted" style={{marginTop: '6px'}}>
+                                    For cloud storage (Azure, S3, GCS), you can select specific containers/buckets
+                                    and mount each one as a separate subfolder.
+                                </small>
+                            </Col>
+                        </FormGroup>
+                    )}
+
+                    {/* Mount scope summary — always visible when a remote is selected */}
+                    {mountFs && (
+                        <FormGroup row>
+                            <Label sm={3}></Label>
+                            <Col sm={9}>
+                                <div style={{
+                                    padding: '8px 12px',
+                                    borderRadius: '4px',
+                                    fontSize: '13px',
+                                    backgroundColor: selectedContainers.size > 0 ? '#e8f4fd' : '#fff3cd',
+                                    border: `1px solid ${selectedContainers.size > 0 ? '#b8daff' : '#ffc107'}`,
+                                    color: selectedContainers.size > 0 ? '#004085' : '#856404'
+                                }}>
+                                    <i className={`fa ${selectedContainers.size > 0 ? 'fa-check-square-o' : 'fa-hdd-o'}`}
+                                       style={{ marginRight: '6px' }} />
+                                    {selectedContainers.size > 0 ? (
+                                        <span>
+                                            <strong>{selectedContainers.size}</strong> of {totalContainers} container{totalContainers !== 1 ? 's' : ''} selected
+                                            {' '}&mdash; each will be mounted as a subfolder under <code>{mountPoint || '/mnt'}</code>
+                                            {readOnly && <Badge color="warning" style={{ marginLeft: '6px', fontSize: '11px' }}>RO</Badge>}
+                                        </span>
+                                    ) : (
+                                        <span>
+                                            The <strong>entire storage account</strong> will be mounted to <code>{mountPoint || '/mnt'}</code>
+                                            {readOnly && <Badge color="warning" style={{ marginLeft: '6px', fontSize: '11px' }}>RO</Badge>}
+                                        </span>
+                                    )}
+                                </div>
+                            </Col>
+                        </FormGroup>
+                    )}
 
                     {!showAdvanced && mountFs && (
                         <div className="text-center mt-3 mb-3">
@@ -838,7 +1034,9 @@ const NewMountModal = (props) => {
                     <Button data-test="ok-button" color="primary" onClick={handleCreateMount}
                             disabled={isCreateDisabled()}>
                         {isCreating ? (
-                            <><i className="fa fa-spinner fa-spin"></i> Creating Mount...</>
+                            <><i className="fa fa-spinner fa-spin"></i> Creating Mount{selectedContainers.size > 1 ? 's' : ''}...</>
+                        ) : selectedContainers.size > 0 ? (
+                            <><i className="fa fa-bolt" style={{marginRight: '4px'}} /> Mount {selectedContainers.size} Container{selectedContainers.size > 1 ? 's' : ''}</>
                         ) : (
                             'Create'
                         )}
@@ -868,7 +1066,7 @@ const NewMountModal = (props) => {
                             {msg.type === 'error' && (
                                 <div style={{ padding: '10px', backgroundColor: '#f8d7da', border: '1px solid #f5c6cb', borderRadius: '4px' }}>
                                     <strong style={{ color: '#721c24' }}>❌ Error:</strong>
-                                    <p style={{ margin: '5px 0 0 0', color: '#721c24' }}>{msg.text}</p>
+                                    <p style={{ margin: '5px 0 0 0', color: '#721c24', whiteSpace: 'pre-wrap' }}>{msg.text}</p>
                                 </div>
                             )}
                         </div>
@@ -899,6 +1097,10 @@ NewMountModal.propTypes = {
      * Function to refresh the mount list after successful mount
      */
     refreshList: PropTypes.func,
+    /**
+     * Disable opening the modal
+     */
+    disabled: PropTypes.bool,
 }
 
 export default NewMountModal;

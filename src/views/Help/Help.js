@@ -295,8 +295,15 @@ class Help extends React.Component {
                                         <i className="icon-speedometer"></i> Dashboard
                                     </h4>
                                     <p>
-                                        The main overview page showing system status, available remotes, and quick statistics.
+                                        The main overview page showing system status, available remotes, and quick statistics. 
+                                        The <strong>Overview card</strong> displays:
                                     </p>
+                                    <ul>
+                                        <li><strong>Connection Status:</strong> Whether the Director is connected to the rclone backend</li>
+                                        <li><strong>Backend:</strong> Rclone Director mode and the rclone version running on the server</li>
+                                        <li><strong>FUSE (Mounting):</strong> Whether FUSE is installed and available for drive mounting. Shows install instructions if missing.</li>
+                                        <li><strong>Username:</strong> The currently logged-in user</li>
+                                    </ul>
 
                                     <h4 style={{marginTop: '20px'}}>
                                         <i className="icon-note"></i> Remotes
@@ -331,7 +338,8 @@ class Help extends React.Component {
                                     </h4>
                                     <p>
                                         Create and manage mount points that make your remote storage appear as local directories on your host system. 
-                                        Once mounted, you can access cloud storage as if it were a local disk.
+                                        Features include a built-in filesystem browser for creating mount directories, 
+                                        bulk container/bucket mounting, read-only mode, bandwidth limiting, and permanent mounts that survive reboots.
                                     </p>
 
                                     <hr style={{marginTop: '30px', marginBottom: '30px'}} />
@@ -739,62 +747,71 @@ class Help extends React.Component {
                                     <h4 style={{marginTop: '20px'}}>Prerequisites</h4>
                                     <ul>
                                         <li>You must have at least one configured remote</li>
-                                        <li><strong>The mount point directory MUST exist on the host system before mounting</strong></li>
+                                        <li><strong>FUSE must be installed</strong> on the server where rclone runs (check the Dashboard → Overview card for FUSE status)</li>
                                     </ul>
 
-                                    <div style={{padding: '15px', backgroundColor: '#fff3cd', border: '2px solid #ffc107', borderRadius: '5px', marginTop: '15px'}}>
-                                        <h5 style={{color: '#856404', marginTop: '0px'}}>
-                                            <i className="fa fa-exclamation-triangle"></i> Important: Create Mount Directory First!
+                                    <div style={{padding: '15px', backgroundColor: '#d1ecf1', border: '2px solid #17a2b8', borderRadius: '5px', marginTop: '15px'}}>
+                                        <h5 style={{color: '#0c5460', marginTop: '0px'}}>
+                                            <i className="fa fa-info-circle"></i> FUSE Requirement
                                         </h5>
                                         <p style={{fontSize: '15px', marginBottom: '10px'}}>
-                                            <strong>Rclone cannot automatically create mount point directories.</strong> You must SSH into your server and create the directory manually before mounting.
+                                            Rclone uses <strong>FUSE</strong> (Filesystem in Userspace) to mount remote storage as local directories. 
+                                            FUSE must be installed on the server where the rclone RCD backend runs.
                                         </p>
                                         <div style={{backgroundColor: '#f8f9fa', padding: '10px', borderRadius: '4px', fontFamily: 'monospace', fontSize: '14px', marginTop: '10px'}}>
-                                            <strong>Example:</strong> To mount at <code>/mnt/my-storage</code>, first run:<br/>
-                                            <code>sudo mkdir -p /mnt/my-storage</code><br/>
-                                            <code>sudo chmod 777 /mnt/my-storage</code>
+                                            <strong>Install FUSE:</strong><br/>
+                                            <code>apt install fuse3</code> (Debian/Ubuntu)<br/>
+                                            <code>apk add fuse3</code> (Alpine)
                                         </div>
-                                        <p style={{fontSize: '14px', marginTop: '10px', marginBottom: '0px', color: '#856404'}}>
-                                            <i className="fa fa-info-circle"></i> If the directory doesn't exist, mounting will fail with an error.
+                                        <p style={{fontSize: '14px', marginTop: '10px', marginBottom: '0px', color: '#0c5460'}}>
+                                            <i className="fa fa-check-circle"></i> The Dashboard Overview card shows whether FUSE is available on your rclone server.
                                         </p>
                                     </div>
 
                                     <h4 style={{marginTop: '20px'}}>Creating a Mount</h4>
                                     <ol>
-                                        <li><strong>SSH into your server</strong> and create the mount directory:
-                                            <div style={{backgroundColor: '#f8f9fa', padding: '10px', borderRadius: '4px', fontFamily: 'monospace', fontSize: '14px', marginTop: '8px'}}>
-                                                <code>sudo mkdir -p /mnt/&lt;your-mount-name&gt;</code><br/>
-                                                <code>sudo chmod 777 /mnt/&lt;your-mount-name&gt;</code>
-                                            </div>
-                                        </li>
-                                        <li>In the Director UI, navigate to <strong>"Mounts"</strong> in the sidebar</li>
+                                        <li>Navigate to <strong>"Mounts"</strong> in the sidebar</li>
                                         <li>Click <strong>"Create new mount"</strong></li>
                                         <li>Fill in the mount configuration:
-                                            <ul>
-                                                <li><strong>Remote / Filesystem:</strong> Select your configured remote (e.g., "my-s3-storage:")</li>
-                                                <li><strong>Mount Point:</strong> The directory you created on the host (e.g., <code>/mnt/my-s3-storage</code>)</li>
-                                                <li>Optionally click <strong>"Open Advanced Settings"</strong> for:
-                                                    <ul>
-                                                        <li>Mount Options (e.g., read-only mode, allow other users)</li>
-                                                        <li>VFS Options (caching, performance tuning)</li>
-                                                        <li>Bandwidth limiting</li>
-                                                    </ul>
-                                                </li>
+                                            <ul style={{marginTop: '8px'}}>
+                                                <li><strong>Remote / Filesystem:</strong> Select your configured remote. Click the <strong>X</strong> button to clear and select a different one.</li>
+                                                <li><strong>Source Subfolder:</strong> (Optional) Restrict the mount to a specific folder within the remote. Click <strong>Browse</strong> to explore available folders.</li>
+                                                <li><strong>Test Connection:</strong> Click to verify read/write access before mounting.</li>
+                                                <li><strong>Mount Point:</strong> The local directory where the remote will appear. Click <strong>Browse</strong> to navigate the filesystem and <strong>create folders</strong> directly from the UI (no SSH needed).</li>
+                                                <li><strong>Permanent:</strong> When checked, the mount survives reboots and is automatically recreated on startup.</li>
+                                                <li><strong>Mount read-only:</strong> Protects cloud data from accidental changes. The mount table shows <strong>RO</strong>/<strong>RW</strong> badges for each mount.</li>
+                                                <li><strong>Bandwidth Limit:</strong> Throttle transfer speed (e.g., 10 MB/s) to prevent the mount from saturating your network.</li>
                                             </ul>
                                         </li>
-                                        <li>Click <strong>"Create"</strong> and wait for the mount to complete (may take 15-30 seconds)</li>
+                                        <li>Click <strong>"Create"</strong> and wait for the mount to complete</li>
+                                    </ol>
+
+                                    <h4 style={{marginTop: '20px'}}>
+                                        <i className="fa fa-th-list"></i> Bulk Mounting Containers/Buckets
+                                    </h4>
+                                    <p>
+                                        For cloud storage providers like Azure Blob Storage, AWS S3, or Google Cloud Storage, you can mount 
+                                        individual containers or buckets as separate subfolders:
+                                    </p>
+                                    <ol>
+                                        <li>Click <strong>"Select Individual Containers/Buckets"</strong> in the mount form</li>
+                                        <li>Use the <strong>checkboxes</strong> to pick specific containers (or <strong>Select all</strong>)</li>
+                                        <li>The status banner shows whether the entire storage account or specific containers will be mounted</li>
+                                        <li>Click <strong>"Mount N Containers"</strong> — each container is mounted as a subfolder under your chosen mount point</li>
                                     </ol>
 
                                     <h4 style={{marginTop: '20px'}}>Managing Mounts</h4>
                                     <ul>
-                                        <li><strong>View Active Mounts:</strong> The Mounts page shows all currently mounted remotes</li>
+                                        <li><strong>View Active Mounts:</strong> The Mounts page shows all currently mounted remotes with their mount point, access mode, and remote source</li>
+                                        <li><strong>Access Column:</strong> Shows <strong style={{color: '#28a745'}}>RW</strong> (read-write) or <strong style={{color: '#e0a800'}}>RO</strong> (read-only) badges for each mount</li>
                                         <li><strong>Unmount:</strong> Click "Unmount" next to a mount to disconnect it</li>
+                                        <li><strong>Unmount All:</strong> Removes all active mounts at once</li>
                                         <li><strong>Access Files:</strong> Navigate to your mount point on the host system (e.g., <code>/mnt/my-s3-storage</code>)</li>
                                     </ul>
 
                                     <div style={{padding: '12px', backgroundColor: '#fff3cd', border: '1px solid #ffc107', borderRadius: '4px', marginTop: '15px'}}>
                                         <i className="fa fa-exclamation-triangle" style={{marginRight: '8px', color: '#856404'}}></i>
-                                        <strong>Important:</strong> Always unmount before shutting down the system to prevent data corruption.
+                                        <strong>Important:</strong> Permanent mounts are recreated automatically after reboot. Temporary mounts are lost on restart.
                                     </div>
 
                                     <h4 style={{marginTop: '25px'}}>
@@ -884,11 +901,11 @@ class Help extends React.Component {
                                     <h4 style={{marginTop: '20px'}}>Rclone Backend Service</h4>
                                     <p>The rclone backend runs as a systemd service on the host:</p>
                                     <div style={{backgroundColor: '#f8f9fa', padding: '15px', borderRadius: '4px', marginTop: '10px', fontFamily: 'monospace'}}>
-                                        <strong>Service Name:</strong> <code>rclone-ui.service</code><br/>
-                                        <strong>Status:</strong> <code>sudo systemctl status rclone-ui</code><br/>
-                                        <strong>Start:</strong> <code>sudo systemctl start rclone-ui</code><br/>
-                                        <strong>Stop:</strong> <code>sudo systemctl stop rclone-ui</code><br/>
-                                        <strong>Restart:</strong> <code>sudo systemctl restart rclone-ui</code>
+                                        <strong>Service Name:</strong> <code>rclone-ui-backend.service</code><br/>
+                                        <strong>Status:</strong> <code>sudo systemctl status rclone-ui-backend</code><br/>
+                                        <strong>Start:</strong> <code>sudo systemctl start rclone-ui-backend</code><br/>
+                                        <strong>Stop:</strong> <code>sudo systemctl stop rclone-ui-backend</code><br/>
+                                        <strong>Restart:</strong> <code>sudo systemctl restart rclone-ui-backend</code>
                                     </div>
 
                                     <h4 style={{marginTop: '20px'}}>Mount Points</h4>

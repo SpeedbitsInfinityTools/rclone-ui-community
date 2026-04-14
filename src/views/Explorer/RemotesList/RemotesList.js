@@ -16,8 +16,8 @@ class RemotesList extends React.Component {
             remoteName: props.remoteName,
             openEnabled: false,
             openButtonText: "Open",
-            checkingConnection: true, // Start with checking state
-            connectionFailed: false // Track if connection check failed
+            checkingConnection: false,
+            connectionFailed: null
         };
         // Track the server ID for the current connection check to prevent race conditions
         this.pendingCheckServerId = null;
@@ -123,15 +123,18 @@ class RemotesList extends React.Component {
 
     render() {
         const {isEmpty, remoteName, checkingConnection, connectionFailed} = this.state;
-        const {remotes} = this.props;
+        const {remotes, version} = this.props;
         const {hasError} = this.props;
-        // const {updateRemoteNameHandle} = this.props;
 
         // Check if remotes are loaded (indicates server connection)
         const remotesLoaded = remotes && Array.isArray(remotes) && remotes.length > 0;
         
-        // Show loading spinner while checking connection
-        if (checkingConnection) {
+        // Use Redux version state as primary connection indicator
+        const reduxConnected = version && (version.version || version.decomposed) && !version.hasError;
+        const isConnected = reduxConnected || remotesLoaded;
+        
+        // Show loading spinner only during active local check AND no Redux data yet
+        if (checkingConnection && !reduxConnected && !remotesLoaded) {
             return (
                 <div className="animated fadeIn">
                     <div style={{textAlign: 'center', padding: '50px'}}>
@@ -144,8 +147,8 @@ class RemotesList extends React.Component {
             );
         }
 
-        // Show full-page warning if not connected (check local state first, then Redux state)
-        if (connectionFailed || hasError) {
+        // Show warning only after check completes or Redux reports error
+        if (!isConnected && (connectionFailed === true || (version && version.hasError))) {
             return (
                 <div className="animated fadeIn">
                     <div style={{
@@ -250,6 +253,7 @@ const mapStateToProps = (state, ownProps) => ({
     hasError: false,
     error: state.remote.error,
     currentPath: state.explorer.currentPaths[ownProps.containerID],
+    version: state.version,
 });
 
 const propTypes = {

@@ -537,6 +537,9 @@ class NewDrive extends React.Component {
       },
       testingConnection: false,
 
+      // Help panel expand state
+      providerHelpExpanded: false,
+      
       // Encryption options
       addEncryption: false,
       encPassword: "",
@@ -575,8 +578,8 @@ class NewDrive extends React.Component {
       saving: false,
 
       // Connection check
-      checkingConnection: true,
-      isConnected: false,
+      checkingConnection: false,
+      isConnected: null,
 
       // OAuth port check modal
       showOAuthPortModal: false,
@@ -825,9 +828,7 @@ class NewDrive extends React.Component {
             // console.log(`Error occurred while checking for config: ${e}`);
             // Only show error if we're still in the old authentication flow
             if (this.state.authModalIsVisible) {
-                toast.error(`Error creating config. ${e}`, {
-                    autoClose: false
-                });
+                toast.error(`Error creating config. ${e}`);
             }
         }
     }
@@ -1086,8 +1087,7 @@ class NewDrive extends React.Component {
                     }, 2000);
                 } else {
                     toast.error(
-                        `OAuth error: ${errorMsg}${suggestion ? ' ' + suggestion : ''}`, 
-                        { autoClose: false }
+                        `OAuth error: ${errorMsg}${suggestion ? ' ' + suggestion : ''}`
                     );
                 }
                 console.error('[OAuth] Failed to start OAuth flow:', oauthResponse);
@@ -1098,24 +1098,24 @@ class NewDrive extends React.Component {
             const details = error.response?.data?.details || '';
             const suggestion = error.response?.data?.suggestion || '';
             
-            // Check if it's a port conflict
-            if (errorMsg.includes('port conflict') || errorMsg.includes('already in use') || details.includes('port')) {
-                toast.error(
-                    `OAuth port conflict detected. Retrying automatically...`, 
-                    { autoClose: 5000 }
+            // Check if it's a port conflict (limit retries to prevent infinite loop)
+            const isPortConflict = errorMsg.includes('port conflict') || errorMsg.includes('already in use');
+            this._oauthRetryCount = (this._oauthRetryCount || 0) + 1;
+            
+            if (isPortConflict && this._oauthRetryCount <= 3) {
+                toast.warn(
+                    `OAuth port conflict detected. Retry ${this._oauthRetryCount}/3...`
                 );
                 
-                // Auto-retry after a short delay
                 setTimeout(() => {
                     if (this._isMounted && !this.state.oauthAuthenticating) {
-                        console.log('[OAuth] Retrying after port conflict error...');
                         this.handleOAuthAuthenticate();
                     }
                 }, 2000);
             } else {
+                this._oauthRetryCount = 0;
                 toast.error(
-                    `Failed to start OAuth: ${errorMsg}${details ? ' - ' + details : ''}${suggestion ? ' ' + suggestion : ''}`, 
-                    { autoClose: false }
+                    `Failed to start OAuth: ${errorMsg}${details ? ' - ' + details : ''}${suggestion ? ' ' + suggestion : ''}`
                 );
             }
             
@@ -1209,7 +1209,7 @@ class NewDrive extends React.Component {
                             oauthAttempts: 0,
                             oauthStatusMessages: []
                         });
-                        toast.error("OAuth authentication timed out. Please try again.", { autoClose: false });
+                        toast.error("OAuth authentication timed out. Please try again.");
                     }
                 }
             }
@@ -1232,7 +1232,7 @@ class NewDrive extends React.Component {
                         oauthAuthUrl: null,
                         oauthAttempts: 0
                     });
-                    toast.error("OAuth authentication timed out. Please try again.", { autoClose: false });
+                    toast.error("OAuth authentication timed out. Please try again.");
                 }
             }
             // Otherwise, continue polling (error is expected if config doesn't exist yet)
@@ -1661,7 +1661,66 @@ class NewDrive extends React.Component {
     }
 
     /**
-     * Handle inoit change and set appropriate errors.
+     * Parse Azure connection string, SAS token, or Blob SAS URL into a clean SAS URL.
+     * Returns { sasUrl, account, type } or null if not a recognized format.
+     */
+    parseAzureSasInput = (input) => {
+        const trimmed = input.trim();
+        
+        // Connection string: "BlobEndpoint=https://...;SharedAccessSignature=sv=..."
+        if (trimmed.includes('BlobEndpoint=') && trimmed.includes('SharedAccessSignature=')) {
+            const parts = {};
+            trimmed.split(';').forEach(part => {
+                const eq = part.indexOf('=');
+                if (eq > 0) {
+                    const key = part.substring(0, eq).trim();
+                    const val = part.substring(eq + 1).trim();
+                    // SharedAccessSignature value contains '=' so we need special handling
+                    if (key === 'SharedAccessSignature') {
+                        // Everything after "SharedAccessSignature=" up to next known key or end
+                        parts[key] = val;
+                    } else if (!parts[key]) {
+                        parts[key] = val;
+                    }
+                }
+            });
+            
+            // Re-extract SharedAccessSignature properly (it contains = and ;-delimited params)
+            const sasMatch = trimmed.match(/SharedAccessSignature=(.+?)(?:$)/);
+            const blobMatch = trimmed.match(/BlobEndpoint=(https?:\/\/[^;]+)/);
+            
+            if (blobMatch && sasMatch) {
+                const blobEndpoint = blobMatch[1].replace(/\/$/, '');
+                const sasToken = sasMatch[1];
+                const accountMatch = blobEndpoint.match(/https?:\/\/([^.]+)\./);
+                return {
+                    sasUrl: `${blobEndpoint}?${sasToken}`,
+                    account: accountMatch ? accountMatch[1] : '',
+                    type: 'Azure connection string'
+                };
+            }
+        }
+        
+        // Bare SAS token: "sv=2025-11-05&ss=b&srt=sc&sp=..."  (no URL prefix)
+        if (trimmed.startsWith('sv=') || trimmed.startsWith('?sv=')) {
+            return null; // Can't construct full URL without knowing the account
+        }
+        
+        // Already a proper Blob SAS URL: "https://account.blob.core.windows.net/?sv=..."
+        if (trimmed.startsWith('https://') && trimmed.includes('.blob.') && trimmed.includes('sv=')) {
+            const accountMatch = trimmed.match(/https?:\/\/([^.]+)\./);
+            return {
+                sasUrl: trimmed,
+                account: accountMatch ? accountMatch[1] : '',
+                type: 'Azure Blob SAS URL'
+            };
+        }
+        
+        return null;
+    }
+    
+    /**
+     * Handle input change and set appropriate errors.
      * @param e
      */
     handleInputChange = (e) => {
@@ -1669,6 +1728,60 @@ class NewDrive extends React.Component {
         let inputName = e.target.name;
         let inputValue = e.target.value;
         const inputType = this.state.optionTypes[inputName];
+        
+        // Azure Blob: auto-parse connection strings pasted into ANY field
+        if (this.state.drivePrefix === 'azureblob' && inputValue) {
+            // Detect connection string in any field (sas_url, key, or account)
+            if ((inputName === 'sas_url' || inputName === 'key' || inputName === 'account') 
+                && (inputValue.includes('BlobEndpoint=') || inputValue.includes('SharedAccessSignature='))) {
+                const parsed = this.parseAzureSasInput(inputValue);
+                if (parsed) {
+                    this.setState({
+                        formValues: {
+                            ...this.state.formValues,
+                            sas_url: parsed.sasUrl,
+                            account: '',
+                            key: ''
+                        }
+                    });
+                    toast.success(`Detected ${parsed.type} - auto-configured SAS URL`);
+                    return;
+                }
+            }
+            
+            // Detect Blob SAS URL pasted into sas_url field
+            if (inputName === 'sas_url') {
+                const parsed = this.parseAzureSasInput(inputValue);
+                if (parsed) {
+                    this.setState({
+                        formValues: {
+                            ...this.state.formValues,
+                            sas_url: parsed.sasUrl,
+                            account: '',
+                            key: ''
+                        }
+                    });
+                    toast.success(`Detected ${parsed.type} - auto-configured SAS URL`);
+                    return;
+                }
+                // Any value in SAS URL clears account + key
+                if (inputValue) {
+                    this.setState({
+                        formValues: { ...this.state.formValues, sas_url: inputValue, account: '', key: '' }
+                    });
+                    return;
+                }
+            }
+            
+            // Filling account or key clears SAS URL
+            if ((inputName === 'account' || inputName === 'key') && inputValue && this.state.formValues.sas_url) {
+                this.setState({
+                    formValues: { ...this.state.formValues, [inputName]: inputValue, sas_url: '' }
+                });
+                return;
+            }
+        }
+        
         this.setState({
             formValues: {
                 ...this.state.formValues,
@@ -2193,9 +2306,7 @@ class NewDrive extends React.Component {
               }
 
           } catch (err) {
-            toast.error(`Error creating config. ${err}`, {
-              autoClose: false
-            });
+            toast.error(`Error creating config. ${err}`);
             this.stopAuthentication();
             this.setState({ saving: false });
           }
@@ -2502,7 +2613,7 @@ class NewDrive extends React.Component {
                 }
             } catch (err) {
                 this.setState(prev => ({
-                    testResults: {...prev.testResults, connectionTest: false, error: `Failed to save configuration: ${err.response?.data?.error || err.message}`}
+                    testResults: {...prev.testResults, connectionTest: false, error: `Failed to save configuration: ${err.response?.data?.details?.error || err.response?.data?.error || err.message}`}
                 }));
                 toast.error(`Failed to save configuration: ${err.response?.data?.error || err.message}`);
                 return;
@@ -2524,7 +2635,7 @@ class NewDrive extends React.Component {
             } catch (err) {
                 this.setState(prev => ({
                     testingConnection: false,
-                    testResults: {...prev.testResults, connectionTest: false, error: `Connection test failed: ${err.response?.data?.error || err.message}`}
+                    testResults: {...prev.testResults, connectionTest: false, error: `Connection test failed: ${err.response?.data?.details?.error || err.response?.data?.error || err.message}`}
                 }));
                 return;
             }
@@ -2540,7 +2651,7 @@ class NewDrive extends React.Component {
                 }));
             } catch (err) {
                 this.setState(prev => ({
-                    testResults: {...prev.testResults, readTest: false, error: err.response?.data?.error || err.message}
+                    testResults: {...prev.testResults, readTest: false, error: err.response?.data?.details?.error || err.response?.data?.error || err.message}
                 }));
                 return;
             }
@@ -2574,7 +2685,7 @@ class NewDrive extends React.Component {
                 }));
             } catch (err) {
                 this.setState(prev => ({
-                    testResults: {...prev.testResults, writeTest: false, error: err.response?.data?.error || "Write test failed - remote may be read-only"}
+                    testResults: {...prev.testResults, writeTest: false, error: err.response?.data?.details?.error || err.response?.data?.error || "Write test failed - remote may be read-only"}
                 }));
             }
             
@@ -2849,7 +2960,7 @@ class NewDrive extends React.Component {
 
     render() {
         const {drivePrefix, driveName, driveNameIsValid, currentStepNumber, oauthIsLocalMachine} = this.state;
-        const {providers} = this.props;
+        const {providers, version} = this.props;
         
         // Check if providers are loaded (indicates server connection)
         const providersLoaded = providers && Array.isArray(providers) && providers.length > 0;
@@ -2857,8 +2968,12 @@ class NewDrive extends React.Component {
         // Determine if current remote type supports OAuth
         const isOAuthRemote = drivePrefix && providers && supportsOAuth(providers, drivePrefix);
         
-        // Show loading spinner while checking connection
-        if (this.state.checkingConnection) {
+        // Use Redux version state as primary connection indicator
+        const reduxConnected = version && (version.version || version.decomposed) && !version.hasError;
+        const isConnected = reduxConnected || this.state.isConnected || providersLoaded;
+        
+        // Show loading spinner only during active local check AND no Redux data yet
+        if (this.state.checkingConnection && !reduxConnected && !providersLoaded) {
             return (
                 <div className="animated fadeIn">
                     <div style={{textAlign: 'center', padding: '50px'}}>
@@ -2871,8 +2986,8 @@ class NewDrive extends React.Component {
             );
         }
 
-        // Show warning if not connected
-        if (!this.state.isConnected) {
+        // Show warning if not connected (only after check completes or Redux reports error)
+        if (!isConnected && (this.state.isConnected === false || version.hasError)) {
             return (
                 <div className="animated fadeIn">
                     <Card>
@@ -3086,17 +3201,59 @@ class NewDrive extends React.Component {
                             </div>
                         )}
                         
-                        {drivePrefix === "s3" && this.state.formValues.provider && this.state.formValues.provider !== "AWS" && (
+                        {drivePrefix === "s3" && this.state.formValues.provider && (
                             <Row style={{marginBottom: "15px"}}>
                                 <Col md={7}>
                                     <div style={{padding: "10px", backgroundColor: "#e7f3ff", border: "1px solid #b3d9ff", borderRadius: "4px", height: "100%"}}>
-                                        <i className="fa fa-info-circle" style={{marginRight: "8px", color: "#0066cc"}}></i>
-                                        <strong>S3-Compatible Storage Configuration:</strong>
-                                        <ul style={{marginTop: "8px", marginBottom: "0", paddingLeft: "20px", fontSize: "13px"}}>
-                                            <li><strong>Endpoint URL:</strong> Enter your provider's S3 endpoint (e.g., fsn1.your-objectstorage.com for Hetzner)</li>
-                                            <li><strong>Access Key ID & Secret Key:</strong> Use the credentials from your provider's dashboard</li>
-                                            <li><strong>Region:</strong> Can usually be left blank (or match your location code, e.g., "fsn1")</li>
-                                        </ul>
+                                        <div 
+                                            style={{cursor: "pointer", display: "flex", alignItems: "center"}} 
+                                            onClick={() => this.setState(prev => ({providerHelpExpanded: !prev.providerHelpExpanded}))}
+                                        >
+                                            <i className={`fa fa-chevron-${this.state.providerHelpExpanded ? 'down' : 'right'}`} style={{marginRight: "8px", color: "#0066cc", fontSize: "12px", width: "12px"}}></i>
+                                            <i className="fa fa-info-circle" style={{marginRight: "8px", color: "#0066cc"}}></i>
+                                            <strong>{this.state.formValues.provider === "AWS" ? "AWS S3" : "S3-Compatible Storage"} - How to connect</strong>
+                                        </div>
+                                        {this.state.providerHelpExpanded && (
+                                            <div style={{marginTop: "8px", fontSize: "13px"}}>
+                                                {this.state.formValues.provider === "AWS" ? (
+                                                    <>
+                                                        <p style={{marginBottom: "6px"}}>In the AWS Console, go to <strong>IAM &rarr; Users &rarr; your user &rarr; Security credentials</strong>:</p>
+                                                        <ol style={{paddingLeft: "20px", marginBottom: "6px"}}>
+                                                            <li>Click <strong>Create access key</strong></li>
+                                                            <li>Copy the <strong>Access Key ID</strong> &rarr; paste into the field below</li>
+                                                            <li>Copy the <strong>Secret Access Key</strong> &rarr; paste into the field below</li>
+                                                        </ol>
+                                                        <p style={{marginBottom: "4px"}}><strong>Region:</strong> Select the region where your S3 buckets are (e.g., <code>eu-central-1</code> for Frankfurt)</p>
+                                                        <p style={{marginBottom: "0", fontSize: "12px", color: "#555"}}>
+                                                            <strong>Tip:</strong> Leave the Endpoint field empty for AWS - it's auto-configured from the region.
+                                                        </p>
+                                                    </>
+                                                ) : (
+                                                    <>
+                                                        <p style={{marginBottom: "6px"}}>Find these 3 values in your provider's dashboard:</p>
+                                                        <table style={{width: "100%", fontSize: "12px", borderCollapse: "collapse"}}>
+                                                            <tbody>
+                                                                <tr style={{borderBottom: "1px solid #ddd"}}>
+                                                                    <td style={{padding: "4px 8px", fontWeight: "bold", whiteSpace: "nowrap"}}>Access Key ID</td>
+                                                                    <td style={{padding: "4px 8px"}}>Your provider's access key</td>
+                                                                </tr>
+                                                                <tr style={{borderBottom: "1px solid #ddd"}}>
+                                                                    <td style={{padding: "4px 8px", fontWeight: "bold", whiteSpace: "nowrap"}}>Secret Access Key</td>
+                                                                    <td style={{padding: "4px 8px"}}>Your provider's secret key (shown once at creation)</td>
+                                                                </tr>
+                                                                <tr style={{borderBottom: "1px solid #ddd"}}>
+                                                                    <td style={{padding: "4px 8px", fontWeight: "bold", whiteSpace: "nowrap"}}>Endpoint</td>
+                                                                    <td style={{padding: "4px 8px"}}>e.g., <code>fsn1.your-objectstorage.com</code> (Hetzner) or <code>s3.us-east-1.wasabisys.com</code> (Wasabi)</td>
+                                                                </tr>
+                                                            </tbody>
+                                                        </table>
+                                                        <p style={{marginTop: "6px", marginBottom: "0", fontSize: "12px", color: "#555"}}>
+                                                            <strong>Region:</strong> Can usually be left blank, or match your location code (e.g., <code>fsn1</code> for Hetzner Falkenstein).
+                                                        </p>
+                                                    </>
+                                                )}
+                                            </div>
+                                        )}
                                     </div>
                                 </Col>
                                 <Col md={5}>
@@ -3109,7 +3266,110 @@ class NewDrive extends React.Component {
                                             color="primary" 
                                             size="sm"
                                             onClick={this.testRemoteConnection} 
-                                            disabled={this.state.testingConnection || !this.state.formValues.endpoint || !this.state.formValues.access_key_id || !this.state.formValues.secret_access_key}
+                                            disabled={this.state.testingConnection || !this.state.formValues.access_key_id || !this.state.formValues.secret_access_key || (this.state.formValues.provider !== "AWS" && !this.state.formValues.endpoint)}
+                                            style={{width: "100%"}}>
+                                            {this.state.testingConnection ? (
+                                                <><i className="fa fa-spinner fa-spin"/> Testing...</>
+                                            ) : (
+                                                <><i className="fa fa-plug"/> Test Config</>
+                                            )}
+                                        </Button>
+                                        {this.state.testResults.tested && (
+                                            <div style={{marginTop: "10px", fontSize: "12px"}}>
+                                                {this.state.testResults.connectionTest === true && (
+                                                    <div className="text-success"><i className="fa fa-check-circle"/> Connection OK</div>
+                                                )}
+                                                {this.state.testResults.connectionTest === false && (
+                                                    <div className="text-danger"><i className="fa fa-times-circle"/> Connection failed</div>
+                                                )}
+                                                {this.state.testResults.error && (
+                                                    <div className="text-danger" style={{marginTop: "5px", fontSize: "11px"}}>{this.state.testResults.error}</div>
+                                                )}
+                                            </div>
+                                        )}
+                                    </div>
+                                </Col>
+                            </Row>
+                        )}
+                        
+                        {drivePrefix === "azureblob" && (
+                            <Row style={{marginBottom: "15px"}}>
+                                <Col md={7}>
+                                    <div style={{padding: "10px", backgroundColor: "#e7f3ff", border: "1px solid #b3d9ff", borderRadius: "4px", height: "100%"}}>
+                                        <div 
+                                            style={{cursor: "pointer", display: "flex", alignItems: "center"}} 
+                                            onClick={() => this.setState(prev => ({providerHelpExpanded: !prev.providerHelpExpanded}))}
+                                        >
+                                            <i className={`fa fa-chevron-${this.state.providerHelpExpanded ? 'down' : 'right'}`} style={{marginRight: "8px", color: "#0066cc", fontSize: "12px", width: "12px"}}></i>
+                                            <i className="fa fa-info-circle" style={{marginRight: "8px", color: "#0066cc"}}></i>
+                                            <strong>Azure Blob Storage - How to connect</strong>
+                                        </div>
+                                        {this.state.providerHelpExpanded && (
+                                            <div style={{marginTop: "8px", fontSize: "13px"}}>
+                                                <p style={{marginBottom: "8px", fontWeight: "bold"}}>Choose one of these two methods:</p>
+
+                                                <div style={{padding: "8px 10px", backgroundColor: "#d4edda", border: "1px solid #c3e6cb", borderRadius: "4px", marginBottom: "8px"}}>
+                                                    <strong style={{color: "#155724"}}>Method 1: Account + Key (easiest, full access)</strong>
+                                                    <div style={{fontSize: "12px", marginTop: "4px"}}>
+                                                        In Azure Portal &rarr; your Storage Account &rarr; <strong>Access keys</strong>:
+                                                        <ol style={{paddingLeft: "20px", marginBottom: "0", marginTop: "4px"}}>
+                                                            <li><strong>Account</strong> field &rarr; your account name (e.g., <code>martintest3</code>)</li>
+                                                            <li><strong>Key</strong> field &rarr; copy <strong>key1</strong> (the long base64 string, not the connection string!)</li>
+                                                        </ol>
+                                                        <div style={{marginTop: "4px", color: "#555"}}>This gives full access. Leave "SAS URL" empty.</div>
+                                                    </div>
+                                                </div>
+
+                                                <div style={{padding: "8px 10px", backgroundColor: "#f8f9fa", border: "1px solid #dee2e6", borderRadius: "4px", marginBottom: "8px"}}>
+                                                    <strong>Method 2: SAS URL (time-limited access)</strong>
+                                                    <div style={{fontSize: "12px", marginTop: "4px"}}>
+                                                        In Azure Portal &rarr; your Storage Account &rarr; <strong>Shared access signature</strong> &rarr; Generate SAS. Azure shows 3 values:
+                                                        <table style={{width: "100%", fontSize: "12px", borderCollapse: "collapse", marginTop: "4px"}}>
+                                                            <tbody>
+                                                                <tr style={{borderBottom: "1px solid #ddd"}}>
+                                                                    <td style={{padding: "3px 6px", color: "#999"}}>Connection string</td>
+                                                                    <td style={{padding: "3px 6px", color: "#999"}}>&#10060; ignore (you can paste it here though - we auto-detect it)</td>
+                                                                </tr>
+                                                                <tr style={{borderBottom: "1px solid #ddd"}}>
+                                                                    <td style={{padding: "3px 6px", color: "#999"}}>SAS token</td>
+                                                                    <td style={{padding: "3px 6px", color: "#999"}}>&#10060; ignore</td>
+                                                                </tr>
+                                                                <tr style={{backgroundColor: "#d4edda"}}>
+                                                                    <td style={{padding: "3px 6px", fontWeight: "bold"}}>Blob service SAS URL</td>
+                                                                    <td style={{padding: "3px 6px"}}>&#10004; paste into <strong>"SAS URL"</strong> below</td>
+                                                                </tr>
+                                                            </tbody>
+                                                        </table>
+                                                        <div style={{marginTop: "4px", color: "#555"}}>Leave "Account" and "Key" empty. SAS expires on the date you set.</div>
+                                                    </div>
+                                                </div>
+
+                                                <div style={{padding: "8px 10px", backgroundColor: "#fff3cd", border: "1px solid #ffc107", borderRadius: "4px"}}>
+                                                    <strong style={{color: "#856404"}}><i className="fa fa-exclamation-triangle" style={{marginRight: "4px"}}></i>SAS Permissions - Important!</strong>
+                                                    <div style={{fontSize: "12px", marginTop: "4px", color: "#856404"}}>
+                                                        When generating the SAS, under <strong>Allowed resource types</strong> make sure to check <strong>all three</strong>:
+                                                        <ul style={{paddingLeft: "20px", marginBottom: "0", marginTop: "4px"}}>
+                                                            <li>&#9745; Service</li>
+                                                            <li>&#9745; Container</li>
+                                                            <li>&#9745; <strong>Object</strong> &larr; often missed! Required to list and access files</li>
+                                                        </ul>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        )}
+                                    </div>
+                                </Col>
+                                <Col md={5}>
+                                    <div style={{padding: "10px", backgroundColor: "#f8f9fa", border: "1px solid #dee2e6", borderRadius: "4px", height: "100%"}}>
+                                        <strong><i className="fa fa-check-circle" style={{marginRight: "6px", color: "#28a745"}}></i>Test Connection</strong>
+                                        <p style={{fontSize: "12px", color: "#666", marginTop: "8px", marginBottom: "10px"}}>
+                                            Verify your credentials work before proceeding.
+                                        </p>
+                                        <Button 
+                                            color="primary" 
+                                            size="sm"
+                                            onClick={this.testRemoteConnection} 
+                                            disabled={this.state.testingConnection || (!this.state.formValues.account && !this.state.formValues.sas_url)}
                                             style={{width: "100%"}}>
                                             {this.state.testingConnection ? (
                                                 <><i className="fa fa-spinner fa-spin"/> Testing...</>
@@ -3238,9 +3498,14 @@ class NewDrive extends React.Component {
                                     )}
                                 </div>
 
-                                <p style={{marginBottom: "15px"}}>
-                                    <strong>You can skip these advanced settings and they will be auto-configured.</strong> For auto config, leave the parameters as they are.
-                                </p>
+                                <div style={{padding: "12px 15px", marginBottom: "15px", backgroundColor: "#d4edda", border: "1px solid #c3e6cb", borderRadius: "6px"}}>
+                                    <i className="fa fa-forward" style={{marginRight: "8px", color: "#155724"}}></i>
+                                    <strong style={{color: "#155724"}}>You can skip this step!</strong>
+                                    <p style={{marginTop: "6px", marginBottom: "0", fontSize: "13px", color: "#155724"}}>
+                                        These are expert-level settings that most users don't need to change. 
+                                        Click <strong>Next</strong> to proceed with the defaults. Only modify these if you know what you're doing.
+                                    </p>
+                                </div>
                                 
                                 <DriveParameters drivePrefix={drivePrefix} loadAdvanced={true}
                                                  changeHandler={this.handleInputChange}
@@ -3746,7 +4011,8 @@ const mapStateToProps = state => ({
     /**
      * The list of all providers.
      */
-    providers: state.config.providers
+    providers: state.config.providers,
+    version: state.version
 });
 
 NewDrive.propTypes = {

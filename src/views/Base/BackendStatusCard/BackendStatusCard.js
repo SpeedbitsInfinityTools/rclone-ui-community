@@ -1,11 +1,12 @@
 import React from "react";
-import {Card, CardBody, CardHeader} from "reactstrap";
+import {Card, CardBody, CardHeader, Badge} from "reactstrap";
 import * as PropTypes from "prop-types";
 import ReactDOM from "react-dom";
 import RunningJobs from "../RunningJobs";
 import {connect} from "react-redux";
 import {enableCheckStatus, getStatus} from "../../../actions/statusActions";
 import {MODAL_ROOT_ELEMENT, STATUS_REFRESH_TIMEOUT, USER_NAME_KEY} from "../../../utils/Constants";
+import {checkHealth} from "../../../utils/API/director";
 
 /**
  * Functional component Modal which is placed in the element with id "modal-root" in index.html using React.createPortal
@@ -24,19 +25,37 @@ function TaskModal() {
  */
 class BackendStatusCard extends React.Component {
 
+    constructor(props) {
+        super(props);
+        this.state = {
+            healthData: null
+        };
+    }
 
     componentDidMount() {
-
-        // Check if the connection to the backend is active
         this.props.getStatus();
         this.refreshInterval = setInterval(() => this.props.getStatus(), STATUS_REFRESH_TIMEOUT);
+        this.fetchHealthData();
     }
 
+    componentDidUpdate(prevProps) {
+        if (!prevProps.isConnected && this.props.isConnected) {
+            this.fetchHealthData();
+        }
+    }
 
     componentWillUnmount() {
-        // Clear the interval before component is unmounted
         clearInterval(this.refreshInterval);
     }
+
+    fetchHealthData = async () => {
+        try {
+            const data = await checkHealth();
+            this.setState({ healthData: data });
+        } catch (err) {
+            // Health endpoint may not be available yet
+        }
+    };
 
     /**
      * Enable or disable checking of status request by http request to the backend.
@@ -55,6 +74,7 @@ class BackendStatusCard extends React.Component {
      */
     render() {
         const {isConnected, mode, checkStatus} = this.props;
+        const {healthData} = this.state;
 
         const username = sessionStorage.getItem(USER_NAME_KEY);
 
@@ -69,7 +89,7 @@ class BackendStatusCard extends React.Component {
                     </CardHeader>
                     <CardBody>
                         <StatusText checkStatus={checkStatus} connectivityStatus={isConnected}
-                                    userName={username}/>
+                                    userName={username} healthData={healthData}/>
 
                     </CardBody>
                 </Card>
@@ -117,17 +137,20 @@ class BackendStatusCard extends React.Component {
  * @returns {*}
  * @constructor
  */
-function StatusText({connectivityStatus, checkStatus, userName}) {
+function StatusText({connectivityStatus, checkStatus, userName, healthData}) {
 
     let statusText = "";
     if(!checkStatus){
         statusText = "Not monitoring connectivity status. Tap the icon in navbar to start.";
     }else if(connectivityStatus){
-        // Connected to backend
         statusText = "Rclone Director is connected and proxying to your configured rclone backend";
     }else{
         statusText = "Cannot connect to rclone backend. Check if Rclone Director and rclone services are running."
     }
+
+    const backend = healthData?.backend;
+    const fuse = healthData?.fuse;
+    const rcloneVersion = backend?.server?.version;
 
     return (
         <>
@@ -137,12 +160,43 @@ function StatusText({connectivityStatus, checkStatus, userName}) {
             </p>
             <p>
                 <span className={"card-subtitle"}>Backend: {" "}</span>
-                <span className="card-text">Rclone Director (multi-server)</span>
+                <span className="card-text">
+                    Rclone Director (multi-server)
+                    {rcloneVersion && <Badge color="info" style={{ marginLeft: '8px', fontSize: '11px' }}>rclone {rcloneVersion}</Badge>}
+                </span>
             </p>
             <p>
                 <span className={"card-subtitle"}>Username: {" "}</span>
                 <span className="card-text">{userName}</span>
             </p>
+            {connectivityStatus && fuse && (
+                <p>
+                    <span className={"card-subtitle"}>FUSE (Mounting): {" "}</span>
+                    {fuse.available === true && (
+                        <Badge color="success" style={{ fontSize: '12px' }}>
+                            <i className="fa fa-check" style={{ marginRight: '4px' }}></i>Available
+                        </Badge>
+                    )}
+                    {fuse.available === false && (
+                        <span>
+                            <Badge color="danger" style={{ fontSize: '12px' }}>
+                                <i className="fa fa-times" style={{ marginRight: '4px' }}></i>Not Installed
+                            </Badge>
+                            <span className="text-danger" style={{ fontSize: '12px', display: 'block', marginTop: '4px' }}>
+                                <i className="fa fa-exclamation-triangle" style={{ marginRight: '4px' }}></i>
+                                FUSE is required for mounting drives. Install it on the rclone server:{' '}
+                                <code style={{ fontSize: '11px' }}>apt install fuse3</code> (Debian/Ubuntu) or{' '}
+                                <code style={{ fontSize: '11px' }}>apk add fuse3</code> (Alpine)
+                            </span>
+                        </span>
+                    )}
+                    {fuse.available === null && fuse.error && (
+                        <Badge color="secondary" style={{ fontSize: '12px' }}>
+                            <i className="fa fa-question" style={{ marginRight: '4px' }}></i>Unknown
+                        </Badge>
+                    )}
+                </p>
+            )}
             <p className="text-muted" style={{ fontSize: '12px', marginTop: '10px' }}>
                 <i className="fa fa-info-circle"></i> Manage servers in Menu → Rclone Servers
             </p>

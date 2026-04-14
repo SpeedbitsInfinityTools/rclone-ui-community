@@ -20,7 +20,7 @@ function App() {
     return (
         <div data-test="appComponent">
             <ErrorBoundary>
-                <ToastContainer/>
+                <ToastContainer autoClose={5000} />
                 <HashRouter>
                     <React.Suspense fallback={loading()}>
                         <Routes>

@@ -116,9 +116,21 @@ router.post('/authorize', auth.requireAdminAuth, async (req, res) => {
             return await oauthHandlers.handleAuthorize(req, res, getServerById, getDefaultServer, axiosInstance);
         }
         
-        // Fall back to old Rclone noopauth implementation for other providers
-        console.log(`[OAUTH] Using Rclone noopauth for ${type} (not yet implemented in new module)`);
+        // Provider not yet implemented in our OAuth module
+        console.log(`[OAUTH] Provider "${type}" is not yet supported for OAuth authentication`);
         
+        const supportedProviders = Object.keys(oauthHandlers.providers).join(', ');
+        return res.status(400).json({ 
+            error: `OAuth for "${type}" is not yet supported`,
+            details: `This provider's OAuth flow has not been implemented yet. Supported providers: ${supportedProviders}. For "${type}", please use account key, SAS URL, or connection string authentication instead.`,
+            supported_providers: Object.keys(oauthHandlers.providers)
+        });
+        
+        /* 
+         * Legacy noopauth fallback (disabled - rc/noopauth/get does not exist in rclone)
+         * Kept for reference if rclone adds this endpoint in the future
+         */
+        if (false) { // eslint-disable-line no-constant-condition
         // Get target server
         const server = serverId ? await getServerById(serverId) : await getDefaultServer();
         if (!server) {
@@ -148,9 +160,6 @@ router.post('/authorize', auth.requireAdminAuth, async (req, res) => {
         console.log(`[OAUTH] Starting headless OAuth flow for ${type} remote "${name}"`);
         
         try {
-            // Use Rclone's headless OAuth endpoint (no webserver, no port conflicts!)
-            // This is the recommended approach for headless servers
-            // NOTE: Correct endpoint is /rc/noopauth/get (not /noopauth/get)
             const response = await axiosInstance.post(
                 `${server.url}/rc/noopauth/get`,
                 {
@@ -314,6 +323,7 @@ router.post('/authorize', auth.requireAdminAuth, async (req, res) => {
                 details: errorMsg
             });
         }
+        } // end if (false) - legacy noopauth block
     } catch (error) {
         console.error('[OAUTH] Authorization error:', error);
         res.status(500).json({

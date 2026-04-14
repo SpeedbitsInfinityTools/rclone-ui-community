@@ -318,6 +318,21 @@ function getSessionStats() {
     };
 }
 
+/**
+ * Get the most recently active master key from authenticated sessions.
+ * Used by background services that need to decrypt stored credentials.
+ * @returns {string|null} Hex-encoded master key or null
+ */
+function getAnyActiveMasterKey() {
+    let newest = null;
+    for (const session of activeSessions.values()) {
+        if (!newest || session.lastAccess > newest.lastAccess) {
+            newest = session;
+        }
+    }
+    return newest?.masterKey || null;
+}
+
 // ============================================================================
 // PASSWORD ENCRYPTION/DECRYPTION
 // ============================================================================
@@ -547,6 +562,7 @@ module.exports = {
     destroyAllUserSessions,
     refreshSession,
     getSessionStats,
+    getAnyActiveMasterKey,
     requireAdminAuth,
     isAdminInitialized
 };

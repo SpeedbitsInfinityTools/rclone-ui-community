@@ -26,6 +26,11 @@ const navigation = {
             icon: 'icon-screen-desktop'
         },
         {
+            name: 'Notifications',
+            url: '/notifications',
+            icon: 'fa fa-bell'
+        },
+        {
             name: 'Backend',
             url: '/rcloneBackend',
             icon: 'icon-star',

@@ -82,6 +82,35 @@ router.get('/', async (req, res) => {
             }
         }
         
+        // Check if FUSE/mounting is available on the RCD backend
+        let fuseStatus = { available: null, error: null };
+        if (backendStatus.connected && defaultServer) {
+            try {
+                let password = defaultServer.password;
+                if (defaultServer.encryptedPassword && !password) {
+                    fuseStatus.error = 'Cannot check (password encrypted)';
+                } else {
+                    await axiosInstance.post(
+                        `${defaultServer.url}/mount/listmounts`,
+                        {},
+                        {
+                            auth: { username: defaultServer.username, password: password },
+                            timeout: 3000
+                        }
+                    );
+                    fuseStatus.available = true;
+                }
+            } catch (fuseError) {
+                const errMsg = fuseError.response?.data?.error || fuseError.message || '';
+                if (errMsg.toLowerCase().includes('fusermount') || errMsg.toLowerCase().includes('fuse')) {
+                    fuseStatus.available = false;
+                    fuseStatus.error = 'FUSE not installed on the rclone server';
+                } else {
+                    fuseStatus.available = true;
+                }
+            }
+        }
+        
         const editionInfo = getEditionInfo();
         
         res.json({
@@ -89,6 +118,7 @@ router.get('/', async (req, res) => {
             service: 'Rclone Director',
             timestamp: new Date().toISOString(),
             backend: backendStatus,
+            fuse: fuseStatus,
             serversConfigured: config.servers.length,
             edition: editionInfo.edition,
             maxServers: editionInfo.max_servers

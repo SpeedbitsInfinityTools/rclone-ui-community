@@ -1,6 +1,6 @@
 import React from 'react';
 import {connect} from "react-redux";
-import {Button, Col, Row, Table} from "reactstrap";
+import {Badge, Button, Col, Row, Table} from "reactstrap";
 import * as PropTypes from "prop-types";
 import {addMount, getMountList, unmount, unmountAll} from "../../actions/mountActions";
 import NewMountModal from "./NewMountModal";
@@ -15,8 +15,8 @@ class MountDashboard extends React.Component {
 		this.state = {
 			showNewMountCard: false,
 			isRefreshing: false,
-			checkingConnection: true, // Start with checking state
-			connectionFailed: false // Track if connection check failed
+			checkingConnection: false,
+			connectionFailed: null
 		}
 		// Track the server ID for the current connection check to prevent race conditions
 		this.pendingCheckServerId = null;
@@ -132,18 +132,20 @@ class MountDashboard extends React.Component {
 
 
 	render() {
-		const {currentMounts, getMountList, hasError} = this.props;
+		const {currentMounts, getMountList, hasError, version} = this.props;
 		const {isRefreshing, checkingConnection, connectionFailed} = this.state;
 		
-		// Check if mounts are loaded
+		// Use Redux version state as primary connection indicator
+		const reduxConnected = version && (version.version || version.decomposed) && !version.hasError;
 		const mountsLoaded = currentMounts && Array.isArray(currentMounts);
 		const hasMounts = mountsLoaded && currentMounts.length > 0;
+		const isConnected = reduxConnected || mountsLoaded;
 		
-		// Disable actions if checking connection or has error (check local state first, then Redux state)
-		const isDisconnected = checkingConnection || connectionFailed || hasError;
+		// Disable actions if not connected
+		const isDisconnected = !isConnected && (connectionFailed === true || hasError);
 		
-		// Show loading spinner while checking connection
-		if (checkingConnection) {
+		// Show loading spinner only during active local check AND no Redux data yet
+		if (checkingConnection && !reduxConnected && !mountsLoaded) {
 			return (
 				<div className="animated fadeIn" data-test="mountDashboardComponent">
 					<div style={{textAlign: 'center', padding: '50px'}}>
@@ -156,8 +158,8 @@ class MountDashboard extends React.Component {
 			);
 		}
 
-		// Show full-page warning if not connected (check local state first, then Redux state)
-		if (connectionFailed || hasError) {
+		// Show warning only after check completes or Redux reports error
+		if (!isConnected && (connectionFailed === true || (version && version.hasError))) {
 			return (
 				<div className="animated fadeIn" data-test="mountDashboardComponent">
 					<div style={{
@@ -249,6 +251,7 @@ class MountDashboard extends React.Component {
 					<tr>
 						<th>No.</th>
 						<th>Mount Point</th>
+						<th>Access</th>
 						<th>Mounted since</th>
 						<th>Remote (Fs)</th>
 						<th>Actions</th>
@@ -257,9 +260,19 @@ class MountDashboard extends React.Component {
 					<tbody>
 					{
 						currentMounts && currentMounts.map((item, index) => {
+								const readOnlyValue = item.VfsOpt?.ReadOnly;
+								const isReadOnly = readOnlyValue === true ||
+									readOnlyValue === 'true' ||
+									readOnlyValue === 1 ||
+									readOnlyValue === '1';
 								return (<tr key={item.MountPoint}>
 									<td>{index}</td>
 									<td>{item.MountPoint}</td>
+									<td>
+										{isReadOnly
+											? <Badge color="warning" style={{fontSize: '12px'}}>RO</Badge>
+											: <Badge color="success" style={{fontSize: '12px'}}>RW</Badge>}
+									</td>
 									<td>{new Date(item.MountedOn).toLocaleTimeString()}</td>
 									<td>{item.Fs}</td>
 									<td>
@@ -282,6 +295,7 @@ class MountDashboard extends React.Component {
 const mapStateToProps = state => ({
 	currentMounts: state.mount.currentMounts,
 	hasError: state.mount.error !== null && state.mount.error !== undefined,
+	version: state.version,
 });
 
 MountDashboard.propTypes = {

@@ -98,8 +98,8 @@ class ConfigRow extends React.Component {
         }
         
         if (type === 'azureblob' || type === 'azurefiles') {
-            // Azure: check for account
-            return !!(parameters?.account || remote?.account);
+            // Azure: check for account+key OR sas_url
+            return !!(parameters?.account || remote?.account || parameters?.sas_url || remote?.sas_url);
         }
         
         if (type === 'gcs') {

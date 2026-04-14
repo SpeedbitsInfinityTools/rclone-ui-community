@@ -352,9 +352,7 @@ class FilesView extends React.PureComponent {
             }
         } catch (e) {
             // console.log(`Error in deleting file`);
-            toast.error(`Error deleting file. ${e}`, {
-                autoClose: false
-            });
+            toast.error(`Error deleting file. ${e}`);
         }
 
     }

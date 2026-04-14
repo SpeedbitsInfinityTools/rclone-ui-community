@@ -408,6 +408,28 @@ export async function detectOAuthEnvironment(serverId = null) {
 }
 
 // ============================================================================
+// FILESYSTEM BROWSER
+// ============================================================================
+
+/**
+ * Browse host filesystem directories
+ */
+export async function browsePath(targetPath = '/', mode = 'directories') {
+    const response = await directorAPI.get('/filesystem/browse', {
+        params: { path: targetPath, mode }
+    });
+    return response.data;
+}
+
+/**
+ * Create a directory on the host filesystem
+ */
+export async function createDirectory(targetPath) {
+    const response = await directorAPI.post('/filesystem/create-directory', { path: targetPath });
+    return response.data;
+}
+
+// ============================================================================
 // HEALTH CHECK
 // ============================================================================
 
@@ -416,6 +438,55 @@ export async function detectOAuthEnvironment(serverId = null) {
  */
 export async function checkHealth() {
     const response = await directorAPI.get('/health');
+    return response.data;
+}
+
+// ============================================================================
+// NOTIFICATIONS
+// ============================================================================
+
+export async function getNotificationConfig() {
+    const response = await directorAPI.get('/notifications/config');
+    return response.data;
+}
+
+export async function saveNotificationConfig(config) {
+    const response = await directorAPI.post('/notifications/config', config);
+    return response.data;
+}
+
+export async function testNotification(config) {
+    const response = await directorAPI.post('/notifications/test', { config });
+    return response.data;
+}
+
+export async function getNotificationStatus() {
+    const response = await directorAPI.get('/notifications/status');
+    return response.data;
+}
+
+export async function getNotificationLog() {
+    const response = await directorAPI.get('/notifications/log');
+    return response.data;
+}
+
+export async function startMonitor() {
+    const response = await directorAPI.post('/notifications/monitor/start');
+    return response.data;
+}
+
+export async function stopMonitor() {
+    const response = await directorAPI.post('/notifications/monitor/stop');
+    return response.data;
+}
+
+export async function runMonitorNow() {
+    const response = await directorAPI.post('/notifications/monitor/run-now');
+    return response.data;
+}
+
+export async function updateMonitorInterval(seconds) {
+    const response = await directorAPI.put('/notifications/monitor/interval', { intervalSeconds: seconds });
     return response.data;
 }
 

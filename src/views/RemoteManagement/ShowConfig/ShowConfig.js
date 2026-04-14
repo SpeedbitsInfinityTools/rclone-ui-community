@@ -38,8 +38,8 @@ class ShowConfig extends React.PureComponent {
         showDeleteTemplateModal: false,
         templateToDelete: null,
         deletingTemplate: false,
-        checkingConnection: true, // Start with checking state
-        connectionFailed: false // Track if connection check failed
+        checkingConnection: false,
+        connectionFailed: null
     };
 
     // Track the server ID for the current connection check to prevent race conditions
@@ -202,16 +202,18 @@ class ShowConfig extends React.PureComponent {
 
     render() {
         const { isRefreshing, templates, templatesOpen, loadingTemplates, showDeleteTemplateModal, templateToDelete, deletingTemplate, checkingConnection, connectionFailed } = this.state;
-        const { hasError, remotes } = this.props;
+        const { hasError, remotes, version } = this.props;
         
-        // Check if server is connected
+        // Use Redux version state as primary connection indicator
+        const reduxConnected = version && (version.version || version.decomposed) && !version.hasError;
         const hasRemotes = remotes && Object.keys(remotes).length > 0;
+        const isConnected = reduxConnected || hasRemotes;
         
-        // Disable actions if checking connection or has error (check local state first, then Redux state)
-        const isDisconnected = checkingConnection || connectionFailed || hasError;
+        // Disable actions if not connected
+        const isDisconnected = !isConnected && (connectionFailed === true || hasError);
 
-        // Show loading spinner while checking connection
-        if (checkingConnection) {
+        // Show loading spinner only during active local check AND no Redux data yet
+        if (checkingConnection && !reduxConnected && !hasRemotes) {
             return (
                 <div className="animated fadeIn">
                     <div style={{textAlign: 'center', padding: '50px'}}>
@@ -224,8 +226,8 @@ class ShowConfig extends React.PureComponent {
             );
         }
 
-        // Show full-page warning if not connected (check local state first, then Redux state)
-        if (connectionFailed || hasError) {
+        // Show warning only after check completes or Redux reports error
+        if (!isConnected && (connectionFailed === true || (version && version.hasError))) {
             return (
                 <div className="animated fadeIn">
                     <Card>
@@ -450,8 +452,8 @@ class ShowConfig extends React.PureComponent {
 const mapStateToProps = state => ({
     remotes: state.config.configDump,
     hasError: state.config.hasError,
-    error: state.config.error
-
+    error: state.config.error,
+    version: state.version
 });
 
 ShowConfig.propTypes = {

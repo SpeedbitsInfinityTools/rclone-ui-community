@@ -9,6 +9,7 @@ const MountDashboard = React.lazy(() => import("./views/MountDashboard"));
 const RcloneServers = React.lazy(() => import("./views/RcloneServers/RcloneServers"));
 const Help = React.lazy(() => import("./views/Help/Help"));
 const ChangePassword = React.lazy(() => import("./views/ChangePassword/ChangePassword"));
+const Notifications = React.lazy(() => import("./views/Notifications/Notifications"));
 
 // https://github.com/ReactTraining/react-router/tree/master/packages/react-router-config
 // Define the routes as required
@@ -22,6 +23,7 @@ const routes = [
     {path: 'rcloneBackend', name: 'Rclone Backend', component: RCloneDashboard},
     {path: 'mountDashboard', name: 'Mount Dashboard', component: MountDashboard},
     {path: 'rcloneServers', name: 'Rclone Director', component: RcloneServers},
+    {path: 'notifications', name: 'Notifications', component: Notifications},
     {path: 'help', name: 'Help', component: Help},
     {path: 'changePassword', name: 'Change Password', component: ChangePassword},
 ];

@@ -228,6 +228,12 @@ const oauthRoutes = require('./routes/oauth.routes');
 const mountsRoutes = require('./routes/mounts.routes');
 const proxyRoutes = require('./routes/proxy.routes');
 const healthRoutes = require('./routes/health.routes');
+const filesystemRoutes = require('./routes/filesystem.routes');
+const notificationsRoutes = require('./routes/notifications.routes');
+const healthMonitor = require('./services/health-monitor.service');
+
+// Wire health monitor into notification routes
+notificationsRoutes.setHealthMonitor(healthMonitor);
 
 const app = express();
 
@@ -276,6 +282,12 @@ app.use('/director/oauth', oauthRoutes);
 app.use('/director/mount', mountsRoutes);
 app.use('/director/mounts', mountsRoutes);
 
+// Notifications & Health Monitoring
+app.use('/director/notifications', notificationsRoutes);
+
+// Filesystem browser
+app.use('/director/filesystem', filesystemRoutes);
+
 // Rclone API Proxy (must come last - catch-all)
 app.use('/rclone', proxyRoutes);
 
@@ -297,6 +309,8 @@ app.use((req, res) => {
             '/director/oauth/*',
             '/director/mount/*',
             '/director/mounts/*',
+            '/director/notifications/*',
+            '/director/filesystem/*',
             '/rclone/*'
         ]
     });
@@ -325,6 +339,11 @@ app.listen(PORT, () => {
     console.log('');
     console.log('[SERVER] Rclone Director started successfully');
     console.log('[SERVER] Press Ctrl+C to stop');
+
+    // Initialize health monitor (loads state, auto-starts if configured)
+    healthMonitor.initialize().catch(err => {
+        console.error('[SERVER] Health monitor initialization failed:', err.message);
+    });
 });
 
 // ============================================================================
@@ -391,10 +410,12 @@ process.on('unhandledRejection', (reason, promise) => {
 // Graceful shutdown
 process.on('SIGTERM', () => {
     console.log('\n[SERVER] SIGTERM received, shutting down gracefully...');
+    healthMonitor.stop();
     process.exit(0);
 });
 
 process.on('SIGINT', () => {
     console.log('\n[SERVER] SIGINT received, shutting down gracefully...');
+    healthMonitor.stop();
     process.exit(0);
 });

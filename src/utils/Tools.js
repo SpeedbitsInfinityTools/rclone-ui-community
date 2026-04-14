@@ -422,8 +422,18 @@ export function makeUniqueID(length) {
  * @param drivePrefix {string} The prefix/type of the remote (e.g., "dropbox", "drive")
  * @returns {boolean} True if the remote supports OAuth
  */
+const SUPPORTED_OAUTH_PROVIDERS = [
+    'dropbox', 'drive', 'onedrive', 'box', 'pcloud', 'yandex',
+    'jottacloud', 'hidrive', 'mailru', 'gphotos', 'gcs',
+    'pikpak', 'premiumizeme', 'putio', 'sharefile', 'zoho'
+];
+
 export function supportsOAuth(config, drivePrefix) {
     if (!drivePrefix || !config || !Array.isArray(config)) {
+        return false;
+    }
+    
+    if (!SUPPORTED_OAUTH_PROVIDERS.includes(drivePrefix)) {
         return false;
     }
     

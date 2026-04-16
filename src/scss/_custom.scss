@@ -229,6 +229,20 @@ body{
   .nav-link-success:hover {
     color: #fff;
   }
+
+  .nav-edition-info .nav-link {
+    font-size: 0.75rem;
+    font-weight: normal;
+    color: #93a0ad;
+    padding-top: 4px;
+    padding-bottom: 12px;
+    border-top: none;
+    cursor: default !important;
+    &:hover {
+      background: transparent;
+      color: #93a0ad;
+    }
+  }
 }
 
 // END Sidebar

@@ -519,9 +519,6 @@ class ConfigRow extends React.Component {
 
     renderAuthStatusBadge() {
         const {authStatus, authStatusError, accountInfo} = this.state;
-        const {type} = this.state.remote;
-        const isOAuth = this.isOAuthRemote(type);
-        
         if (authStatus === null || authStatus === 'checking') {
             return (
                 <Badge color="secondary" style={{fontSize: '11px', padding: '4px 8px'}}>

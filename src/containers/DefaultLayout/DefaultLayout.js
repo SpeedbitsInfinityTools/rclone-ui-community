@@ -3,6 +3,8 @@ import {Navigate, Route, Routes} from 'react-router-dom';
 import {Container} from 'reactstrap';
 import {getVersion} from "../../actions/versionActions";
 import {withRouter} from "../../utils/withRouter";
+import {checkHealth} from "../../utils/API/director";
+import appPackage from '../../../package.json';
 
 import {
     AppFooter,
@@ -36,15 +38,34 @@ const VERSION_NAV_ITEM_ATTRS = {
 }
 class DefaultLayout extends Component {
 
+    constructor(props) {
+        super(props);
+        this.state = {
+            edition: null
+        };
+    }
+
     loading = () => <div className="animated fadeIn pt-1 text-center">Loading...</div>;
 
     get navConfig() {
+        const { edition } = this.state;
+        const appVersion = process.env.REACT_APP_VERSION || appPackage.version || '';
+        const editionLabel = edition === 'community' ? 'Community' : edition === 'commercial' ? 'Commercial' : '';
+        const editionSuffix = editionLabel ? ` · ${editionLabel}` : '';
+
         return {
             items: [
                 ...navigation.items,
                 {
                     name: this.props.version.version,
                     ...VERSION_NAV_ITEM_ATTRS
+                },
+                {
+                    name: `UI v${appVersion}${editionSuffix}`,
+                    icon: edition === 'community' ? 'fa fa-users' : 'fa fa-building',
+                    class: 'nav-edition-info',
+                    url: '#',
+                    attributes: { onClick: (e) => e.preventDefault(), style: { cursor: 'default' } }
                 }
             ]
         }
@@ -54,6 +75,18 @@ class DefaultLayout extends Component {
         // Only fetch version if authenticated
         if (sessionStorage.getItem(AUTH_KEY) && window.location.href.indexOf(LOGIN_TOKEN) === -1) {
             this.props.getVersion();
+            this.fetchEdition();
+        }
+    }
+
+    async fetchEdition() {
+        try {
+            const health = await checkHealth();
+            if (health && health.edition) {
+                this.setState({ edition: health.edition });
+            }
+        } catch (e) {
+            // Silently ignore - edition badge just won't show
         }
     }
 

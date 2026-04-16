@@ -1,0 +1,847 @@
+import axiosInstance from "../../../utils/API/API";
+import {findFromConfig, isEmpty, supportsOAuth, validateDriveName, validateDuration, validateInt, validateSizeSuffix} from "../../../utils/Tools";
+import {toast} from "react-toastify";
+import urls from "../../../utils/API/endpoint";
+import {NEW_DRIVE_CONFIG_REFRESH_TIMEOUT} from "../../../utils/Constants";
+
+export function parseAzureSasInput(input) {
+        const trimmed = input.trim();
+        
+        // Connection string with SAS: "BlobEndpoint=https://...;SharedAccessSignature=sv=..."
+        if (trimmed.includes('SharedAccessSignature=')) {
+            const sasMatch = trimmed.match(/SharedAccessSignature=(.+?)$/);
+            const blobMatch = trimmed.match(/BlobEndpoint=(https?:\/\/[^;]+)/);
+            const accountNameMatch = trimmed.match(/AccountName=([^;]+)/);
+            
+            if (blobMatch && sasMatch) {
+                const blobEndpoint = blobMatch[1].replace(/\/$/, '');
+                const sasToken = sasMatch[1];
+                const accountMatch = blobEndpoint.match(/https?:\/\/([^.]+)\./);
+                return {
+                    sasUrl: `${blobEndpoint}?${sasToken}`,
+                    account: accountMatch ? accountMatch[1] : (accountNameMatch ? accountNameMatch[1] : ''),
+                    type: 'Azure connection string (SAS)'
+                };
+            }
+            // No BlobEndpoint but has AccountName - construct the URL
+            if (accountNameMatch && sasMatch) {
+                return {
+                    sasUrl: `https://${accountNameMatch[1]}.blob.core.windows.net?${sasMatch[1]}`,
+                    account: accountNameMatch[1],
+                    type: 'Azure connection string (SAS)'
+                };
+            }
+        }
+        
+        // Connection string with AccountKey (no SAS): "DefaultEndpointsProtocol=https;AccountName=...;AccountKey=..."
+        if (trimmed.includes('AccountKey=') && trimmed.includes('AccountName=')) {
+            const accountNameMatch = trimmed.match(/AccountName=([^;]+)/);
+            const accountKeyMatch = trimmed.match(/AccountKey=([^;]+={0,2})/);
+            if (accountNameMatch && accountKeyMatch) {
+                return {
+                    account: accountNameMatch[1],
+                    key: accountKeyMatch[1],
+                    sasUrl: '',
+                    type: 'Azure connection string (Account Key)'
+                };
+            }
+        }
+        
+        // Bare SAS token: "sv=2025-11-05&ss=b&srt=sc&sp=..."  (no URL prefix)
+        if (trimmed.startsWith('sv=') || trimmed.startsWith('?sv=')) {
+            return null;
+        }
+        
+        // Already a proper Blob SAS URL: "https://account.blob.core.windows.net/?sv=..."
+        if (trimmed.startsWith('https://') && trimmed.includes('.blob.') && trimmed.includes('sv=')) {
+            const accountMatch = trimmed.match(/https?:\/\/([^.]+)\./);
+            return {
+                sasUrl: trimmed,
+                account: accountMatch ? accountMatch[1] : '',
+                type: 'Azure Blob SAS URL'
+            };
+        }
+        
+        return null;
+}
+
+/**
+ * Handle input change and set appropriate errors.
+ * @param e
+ */
+export function handleInputChange(e) {
+
+        let inputName = e.target.name;
+        let inputValue = e.target.value;
+        const inputType = this.state.optionTypes[inputName];
+        
+        // Azure Blob: auto-parse connection strings pasted into ANY field
+        if (this.state.drivePrefix === 'azureblob' && inputValue) {
+            const looksLikeConnString = inputValue.includes('BlobEndpoint=') 
+                || inputValue.includes('SharedAccessSignature=')
+                || inputValue.includes('AccountKey=')
+                || inputValue.includes('AccountName=')
+                || inputValue.includes('DefaultEndpointsProtocol=');
+            
+            if ((inputName === 'sas_url' || inputName === 'key' || inputName === 'account') && looksLikeConnString) {
+                const parsed = this.parseAzureSasInput(inputValue);
+                if (parsed) {
+                    if (parsed.key) {
+                        // AccountKey connection string -> fill account + key, clear sas_url
+                        this.setState({
+                            formValues: {
+                                ...this.state.formValues,
+                                account: parsed.account || '',
+                                key: parsed.key,
+                                sas_url: ''
+                            }
+                        });
+                    } else {
+                        // SAS connection string -> fill sas_url, clear account + key
+                        this.setState({
+                            formValues: {
+                                ...this.state.formValues,
+                                sas_url: parsed.sasUrl,
+                                account: '',
+                                key: ''
+                            }
+                        });
+                    }
+                    toast.success(`Detected ${parsed.type} - auto-configured fields`);
+                    return;
+                }
+            }
+            
+            // Detect Blob SAS URL pasted into sas_url field
+            if (inputName === 'sas_url' && !looksLikeConnString) {
+                const parsed = this.parseAzureSasInput(inputValue);
+                if (parsed) {
+                    this.setState({
+                        formValues: {
+                            ...this.state.formValues,
+                            sas_url: parsed.sasUrl,
+                            account: '',
+                            key: ''
+                        }
+                    });
+                    toast.success(`Detected ${parsed.type} - auto-configured SAS URL`);
+                    return;
+                }
+                // Any value in SAS URL clears account + key
+                if (inputValue) {
+                    this.setState({
+                        formValues: { ...this.state.formValues, sas_url: inputValue, account: '', key: '' }
+                    });
+                    return;
+                }
+            }
+            
+            // Filling account or key clears SAS URL
+            if ((inputName === 'account' || inputName === 'key') && inputValue && this.state.formValues.sas_url) {
+                this.setState({
+                    formValues: { ...this.state.formValues, [inputName]: inputValue, sas_url: '' }
+                });
+                return;
+            }
+        }
+        
+        this.setState({
+            formValues: {
+                ...this.state.formValues,
+                [inputName]: inputValue
+            }
+        });
+        let validateResult = true;
+        let error = "";
+        if (inputType === "SizeSuffix") {
+            validateResult = validateSizeSuffix(inputValue);
+            if (!validateResult) {
+                error = "The valid input is size( off | {unit}{metric} eg: 10G, 100M, 10G100M etc.)"
+            }
+        } else if (inputType === "Duration") {
+            validateResult = validateDuration(inputValue);
+            if (!validateResult) {
+                error = "The valid input is time ({unit}{metric} eg: 10ms, 100m, 10h15ms etc.)"
+            }
+        } else if (inputType === "int") {
+            validateResult = validateInt(inputValue);
+            if (!validateResult) {
+                error = "The valid input is int (100,200,300 etc)"
+            }
+        }
+
+        if (this.state.required[inputName] && (!inputValue || inputValue === "")) {
+            validateResult = false;
+            if (!validateResult) {
+                error += " This field is required";
+            }
+        }
+
+
+        this.setState((prevState) => {
+            return {
+                isValid: {
+                    ...prevState.isValid,
+                    [inputName]: validateResult
+                },
+                formErrors: {
+                    ...prevState.formErrors,
+                    [inputName]: error
+                },
+            }
+        });
+
+
+}
+
+/**
+ * Validate form values against their types and requirements
+ * @param formValues {object} Current form values
+ * @param optionTypes {object} Type mapping for each field
+ * @param required {object} Required flag for each field
+ * @returns {object} Updated isValid and formErrors objects
+ */
+export function validateFormValues(formValues, optionTypes, required) {
+        const isValid = {};
+        const formErrors = {};
+        
+        for (const [key, value] of Object.entries(formValues)) {
+            const inputType = optionTypes[key];
+            const isRequired = required[key];
+            let validateResult = true;
+            let error = "";
+            
+            // Type-specific validation
+            if (inputType === "SizeSuffix") {
+                validateResult = validateSizeSuffix(value);
+                if (!validateResult) {
+                    error = "The valid input is size( off | {unit}{metric} eg: 10G, 100M, 10G100M etc.)";
+                }
+            } else if (inputType === "Duration") {
+                validateResult = validateDuration(value);
+                if (!validateResult) {
+                    error = "The valid input is time ({unit}{metric} eg: 10ms, 100m, 10h15ms etc.)";
+                }
+            } else if (inputType === "int") {
+                validateResult = validateInt(value);
+                if (!validateResult) {
+                    error = "The valid input is int (100,200,300 etc)";
+                }
+            }
+            
+            // Required field validation
+            if (isRequired && (!value || value === "")) {
+                validateResult = false;
+                if (error) {
+                    error += " This field is required";
+                } else {
+                    error = "This field is required";
+                }
+            }
+            
+            isValid[key] = validateResult;
+            formErrors[key] = error;
+        }
+        
+        return { isValid, formErrors };
+}
+
+/**
+ * Update the driveType and then load the equivalent input parameters for that drive.
+ * @param event     {$ObjMap} Event to be handled.
+ * @param newValue  {string} new Value of the drive type.
+ */
+export function changeDriveType(event, {newValue}) {
+
+        const {providers} = this.props;
+
+        let val = newValue;
+
+
+        let availableOptions = {};
+        let optionTypes = {};
+        let isValid = {};
+        let formErrors = {};
+        let required = {};
+        // let drivePrefix = "";
+        // console.log("driveType change", val);
+        if (val !== undefined && val !== "") {
+
+            const currentConfig = findFromConfig(providers, val);
+            if (currentConfig !== undefined) {
+
+                currentConfig.Options.forEach(item => {
+
+                    const {DefaultStr, Type, Name, Required, Hide} = item;
+                    if (Hide === 0) {
+                        availableOptions[Name] = DefaultStr;
+                        optionTypes[Name] = Type;
+                        required[Name] = Required;
+
+                        isValid[Name] = !(Required && (!DefaultStr || DefaultStr === ""));
+
+                        formErrors[Name] = "";
+                    }
+                });
+            }
+            
+            // Preserve existing formValues if they exist (e.g., from template import)
+            const existingFormValues = this.state.formValues || {};
+            const mergedFormValues = { ...availableOptions, ...existingFormValues };
+            
+            // Validate the merged values
+            const validation = this.validateFormValues(mergedFormValues, optionTypes, required);
+            
+            this.setState({
+                drivePrefix: val,
+                formValues: mergedFormValues,
+                optionTypes: optionTypes,
+                isValid: validation.isValid,
+                formErrors: validation.formErrors,
+                required: required
+            });
+        } else {
+            this.setState({drivePrefix: val})
+
+        }
+}
+
+/**
+ * Open second step of setting up the drive and scroll into view.
+ */
+export function openSetupDrive(e) {
+        if (e) e.preventDefault();
+        this.setState({'colSetup': true});
+        // this.setupDriveDiv.scrollIntoView({behavior: "smooth"});
+}
+
+/**
+ *  toggle the step 3: advanced options
+ */
+export function editAdvancedOptions(e) {
+        this.setState({advancedOptions: !this.state.advancedOptions});
+}
+
+/**
+ * Validate the form and set the appropriate errors in the state.
+ * @returns {boolean}
+ */
+export function validateForm() {
+        //    Validate driveName and other parameters
+        const {driveNameIsValid, drivePrefix, isValid, formValues} = this.state;
+        let flag = true;
+
+        if (!driveNameIsValid) {
+            flag = false;
+        }
+        if (drivePrefix === "") {
+            flag = false;
+        }
+
+        // Special validation for S3: Ensure endpoint is provided for non-AWS providers
+        if (drivePrefix === "s3") {
+            const provider = formValues.provider || "";
+            const endpoint = formValues.endpoint || "";
+            
+            // If not AWS, IBM, or Alibaba, endpoint is required
+            if (provider !== "AWS" && provider !== "IBMCOS" && provider !== "Alibaba" && !endpoint.trim()) {
+                toast.error("Endpoint is required for non-AWS S3 providers (e.g., Hetzner, DigitalOcean, etc.)", {
+                    autoClose: 8000
+                });
+                flag = false;
+            }
+        }
+
+        /*Check for validations based on inputType*/
+        for (const [key, value] of Object.entries(isValid)) {
+            if (!key || !value) {
+                flag = false;
+                break;
+            }
+        }
+
+        return flag;
+}
+
+/**
+ *  Show or hide the auth modal.
+ */
+export function toggleAuthModal() {
+        this.setState((state, props) => {
+            return {authModalIsVisible: !state.authModalIsVisible}
+        });
+}
+
+/**
+ *  Show or hide the authentication modal and start timer for checking if the new config is created.
+ */
+export function startAuthentication() {
+        this.toggleAuthModal();
+        // Check every second if the config is created
+        if (this.configCheckInterval === null) {
+            this.configCheckInterval = setInterval(this.checkConfigStatus, NEW_DRIVE_CONFIG_REFRESH_TIMEOUT);
+        } else {
+            console.error("Interval already running. Should not start a new one");
+        }
+
+}
+
+/**
+ *  Called when the config is successfully created. Clears the timout and hides the authentication modal.
+ */
+export function stopAuthentication() {
+        this.setState((state, props) => {
+            return {authModalIsVisible: false}
+        });
+        if (this.configCheckInterval) {
+            clearInterval(this.configCheckInterval);
+            this.configCheckInterval = null;
+        }
+}
+
+/**
+ * Called when form action submit is to be handled.
+ * Validate form and submit request.
+ * */
+export async function handleSubmit(e) {
+        e && e.preventDefault();
+        // console.log("Submitted form");
+
+        // Set saving state
+        this.setState({ saving: true });
+
+      const {formValues, drivePrefix} = this.state;
+        const {providers} = this.props;
+
+
+        if (this.validateForm()) {
+
+            if (drivePrefix !== undefined && drivePrefix !== "") {
+                const currentProvider = findFromConfig(providers, drivePrefix);
+                if (currentProvider !== undefined) {
+
+
+                    const defaults = currentProvider.Options;
+
+                    // console.log(config, formValues, defaults);
+
+                    let finalParameterValues = {};
+
+
+                    for (const [key, value] of Object.entries(formValues)) {
+
+                        if (key === "token") {
+                            finalParameterValues[key] = value;
+                            continue;
+                        }
+                        const defaultValueObj = defaults.find((ele, idx, array) => {
+                            // console.log(key, ele.Name, key === ele.Name);
+                            return (key === ele.Name);
+                        });
+                        if (defaultValueObj) {
+
+                            const {DefaultStr} = defaultValueObj;
+                            if (value !== DefaultStr) {
+                                // console.log(`${value} !== ${DefaultStr}`);
+                                finalParameterValues[key] = value;
+                            }
+                        }
+
+                    }
+
+
+          // Azure: validate sas_url doesn't contain a raw connection string
+          if (drivePrefix === 'azureblob') {
+              const sasVal = finalParameterValues.sas_url || '';
+              const connStringMarkers = ['BlobEndpoint=', 'SharedAccessSignature=', 'QueueEndpoint=',
+                  'FileEndpoint=', 'TableEndpoint=', 'AccountKey=', 'AccountName=', 'DefaultEndpointsProtocol='];
+              if (sasVal && connStringMarkers.some(m => sasVal.includes(m))) {
+                  const parsed = this.parseAzureSasInput(sasVal);
+                  if (parsed && parsed.key) {
+                      finalParameterValues.account = parsed.account || '';
+                      finalParameterValues.key = parsed.key;
+                      finalParameterValues.sas_url = '';
+                      toast.info(`Auto-corrected: detected ${parsed.type} - using Account Key auth`);
+                  } else if (parsed) {
+                      finalParameterValues.sas_url = parsed.sasUrl;
+                      if (parsed.account) finalParameterValues.account = parsed.account;
+                      delete finalParameterValues.key;
+                      toast.info(`Auto-corrected: detected ${parsed.type} in SAS URL field`);
+                  } else {
+                      toast.error("The SAS URL field contains a connection string that could not be parsed. Please paste only the 'Blob service SAS URL'.");
+                      this.setState({ saving: false });
+                      return;
+                  }
+              }
+          }
+
+          // Build base remote data
+          let data = {
+            parameters: finalParameterValues,
+            name: this.state.driveName,
+            type: this.state.drivePrefix
+          };
+
+          try {
+            const {drivePrefix: editingPrefix} = this.props.match.params;
+
+            // If encryption is requested, create an underlying base remote and then a crypt remote with the chosen name
+            if (this.state.addEncryption) {
+              // Validate encryption passwords
+              if (!this.state.encPassword || this.state.encPassword !== this.state.encPasswordRepeat) {
+                toast.error("Encryption passwords do not match");
+                this.stopAuthentication();
+                return;
+              }
+              if (this.state.useFilenamePassword && (!this.state.encPassword2 || this.state.encPassword2 !== this.state.encPassword2Repeat)) {
+                toast.error("Filename encryption passwords do not match");
+                this.stopAuthentication();
+                return;
+              }
+
+              const baseName = `${this.state.driveName}_base`;
+
+              // 1) Create or update the base remote with name '<name>_base'
+              const baseData = { ...data, name: baseName };
+              await Promise.race([
+                axiosInstance.post(urls.createConfig, baseData),
+                new Promise((_, reject) => setTimeout(() => reject(new Error('Request timeout after 30 seconds')), 30000))
+              ]);
+
+              // 2) Create or update the crypt remote with the user facing name '<name>'
+              const cryptParams = {
+                remote: `${baseName}:`,
+                password: this.state.encPassword,
+                filename_encryption: "standard",
+                directory_name_encryption: true
+              };
+              if (this.state.useFilenamePassword) {
+                cryptParams.password2 = this.state.encPassword2;
+              }
+
+              const cryptData = {
+                name: this.state.driveName,
+                type: "crypt",
+                parameters: cryptParams
+              };
+
+              // If editing, update; otherwise create
+              if (!editingPrefix) {
+                await Promise.race([
+                  axiosInstance.post(urls.createConfig, cryptData),
+                  new Promise((_, reject) => setTimeout(() => reject(new Error('Request timeout after 30 seconds')), 30000))
+                ]);
+                this.stopAuthentication();
+                this.setState({
+                    saving: false,
+                    showSuccessModal: true,
+                    successMessage: "Encrypted remote created successfully!"
+                });
+              } else {
+                await Promise.race([
+                  axiosInstance.post(urls.updateConfig, cryptData),
+                  new Promise((_, reject) => setTimeout(() => reject(new Error('Request timeout after 30 seconds')), 30000))
+                ]);
+                this.stopAuthentication();
+                this.setState({
+                    saving: false,
+                    showSuccessModal: true,
+                    successMessage: "Encrypted remote updated successfully!"
+                });
+              }
+              } else {
+                // No encryption: normal create/update
+                // For OAuth remotes, use delete-then-create to avoid Rclone's token refresh logic in config/update
+                const isOAuthRemote = supportsOAuth(this.props.providers || [], this.state.drivePrefix);
+                
+                if (!editingPrefix) {
+                  // Create new remote
+                  if (isOAuthRemote) {
+                    // For OAuth remotes, config/create can hang/error due to token validation
+                    // Make it async and wait a bit, then verify it was created
+                    const createPromise = axiosInstance.post(urls.createConfig, data);
+                    await Promise.race([
+                        createPromise,
+                        new Promise((_, reject) => setTimeout(() => reject(new Error('Config create timeout')), 5000))
+                    ]).catch(async (err) => {
+                        // If create fails or times out, wait a bit and verify config exists
+                        console.log('[OAuth] Config create may have timed out, verifying...', err.message);
+                        await new Promise(resolve => setTimeout(resolve, 2000));
+                        // Verify config was created
+                        const verifyConfig = await axiosInstance.post(urls.getConfigForRemote, {name: this.state.driveName});
+                        if (verifyConfig.data && !isEmpty(verifyConfig.data)) {
+                            console.log('[OAuth] Config verified after async create');
+                            return; // Config exists, success
+                        }
+                        throw err; // Re-throw if config doesn't exist
+                    });
+                    this.stopAuthentication();
+                    this.setState({
+                        saving: false,
+                        showSuccessModal: true,
+                        successMessage: "Remote configuration created successfully!"
+                    });
+                  } else {
+                    await Promise.race([
+                      axiosInstance.post(urls.createConfig, data),
+                      new Promise((_, reject) => setTimeout(() => reject(new Error('Request timeout after 30 seconds')), 30000))
+                    ]);
+                    this.stopAuthentication();
+                    this.setState({
+                        saving: false,
+                        showSuccessModal: true,
+                        successMessage: "Remote configuration created successfully!"
+                    });
+                  }
+                } else {
+                  // Check if remote is being renamed
+                  const isRenaming = this.state.originalDriveName && this.state.originalDriveName !== this.state.driveName;
+                  
+                  if (isRenaming) {
+                    // When renaming, we need to get config from the ORIGINAL name, not the new name
+                    console.log(`[Rename] Renaming remote from "${this.state.originalDriveName}" to "${this.state.driveName}"`);
+                  }
+                  
+                  if (isOAuthRemote) {
+                    // OAuth remotes: preserve token when updating
+                    // Extract token from existing config before deleting
+                    // Use originalDriveName if renaming, otherwise use current driveName
+                    const configNameToCheck = isRenaming ? this.state.originalDriveName : this.state.driveName;
+                    const existingConfigCheck = await axiosInstance.post(urls.getConfigForRemote, {name: configNameToCheck});
+                    const existingToken = existingConfigCheck.data?.token || 
+                                        (existingConfigCheck.data?.parameters && existingConfigCheck.data?.parameters.token);
+                    
+                    if (existingToken && existingToken.length > 0) {
+                      // Preserve the token in the new config
+                      console.log('[OAuth] Preserving existing token when updating config');
+                      finalParameterValues.token = existingToken;
+                      data.parameters = finalParameterValues;
+                    }
+                    
+                    // OAuth remotes: delete then create to avoid token refresh issues
+                    // Use originalDriveName if renaming, otherwise use current driveName
+                    const nameToDelete = isRenaming ? this.state.originalDriveName : this.state.driveName;
+                    try {
+                      await axiosInstance.post(urls.deleteConfig, {name: nameToDelete});
+                      // Wait a moment for Rclone to fully process the deletion
+                      await new Promise(resolve => setTimeout(resolve, 1000));
+                    } catch (deleteErr) {
+                      // Ignore delete errors (config might not exist)
+                      console.log('[OAuth] Delete before update:', deleteErr.response?.status === 404 ? 'not found (ok)' : deleteErr.message);
+                    }
+                    // For OAuth remotes, config/create can hang/error due to token validation
+                    // Make it async and wait a bit, then verify it was created
+                    const createPromise = axiosInstance.post(urls.createConfig, data);
+                    await Promise.race([
+                        createPromise,
+                        new Promise((_, reject) => setTimeout(() => reject(new Error('Config create timeout')), 5000))
+                    ]).catch(async (err) => {
+                        // If create fails or times out, wait a bit and verify config exists
+                        console.log('[OAuth] Config create may have timed out, verifying...', err.message);
+                        await new Promise(resolve => setTimeout(resolve, 2000));
+                        // Verify config was created
+                        const verifyConfig = await axiosInstance.post(urls.getConfigForRemote, {name: this.state.driveName});
+                        if (verifyConfig.data && !isEmpty(verifyConfig.data)) {
+                            console.log('[OAuth] Config verified after async create');
+                            return; // Config exists, success
+                        }
+                        // Don't throw error if config exists - 500 error is expected for OAuth remotes
+                        if (err.response?.status === 500) {
+                            console.log('[OAuth] 500 error is expected for OAuth remotes, config was verified');
+                            return;
+                        }
+                        throw err; // Re-throw if config doesn't exist
+                    });
+                    this.stopAuthentication();
+                    this.setState({
+                        saving: false,
+                        showSuccessModal: true,
+                        successMessage: isRenaming ? "Remote renamed and updated successfully!" : "Remote configuration updated successfully!"
+                    });
+                  } else {
+                    // Non-OAuth remotes
+                    if (isRenaming) {
+                      // When renaming, delete old config then create new one
+                      console.log(`[Rename] Deleting old config "${this.state.originalDriveName}" and creating new config "${this.state.driveName}"`);
+                      try {
+                        await axiosInstance.post(urls.deleteConfig, {name: this.state.originalDriveName});
+                        await new Promise(resolve => setTimeout(resolve, 500));
+                      } catch (deleteErr) {
+                        console.log('[Rename] Delete error:', deleteErr.response?.status === 404 ? 'not found (ok)' : deleteErr.message);
+                      }
+                      await Promise.race([
+                        axiosInstance.post(urls.createConfig, data),
+                        new Promise((_, reject) => setTimeout(() => reject(new Error('Request timeout after 30 seconds')), 30000))
+                      ]);
+                    } else {
+                      // Normal update (same name)
+                      await Promise.race([
+                        axiosInstance.post(urls.updateConfig, data),
+                        new Promise((_, reject) => setTimeout(() => reject(new Error('Request timeout after 30 seconds')), 30000))
+                      ]);
+                    }
+                    this.stopAuthentication();
+                    this.setState({
+                        saving: false,
+                        showSuccessModal: true,
+                        successMessage: isRenaming ? "Remote renamed and updated successfully!" : "Remote configuration updated successfully!"
+                    });
+                  }
+                }
+              }
+
+          } catch (err) {
+            toast.error(`Error creating config. ${err}`);
+            this.stopAuthentication();
+            this.setState({ saving: false });
+          }
+
+                }
+            }
+        } else {
+            // Validation failed - find and report specific errors
+            const {driveNameIsValid, drivePrefix, isValid, formErrors, formValues} = this.state;
+            const errors = [];
+            
+            // Check specific validation failures
+            if (!driveNameIsValid) {
+                errors.push("Remote name is invalid or already exists (Step 1)");
+            }
+            if (!drivePrefix || drivePrefix === "") {
+                errors.push("Please select a provider (Step 1)");
+            }
+            
+            // Check for invalid form fields and determine which step they're in
+            const invalidFieldsStep2 = [];
+            const invalidFieldsStep3 = [];
+            
+            // Get provider config to check which fields are advanced
+            const {providers} = this.props;
+            const currentProvider = drivePrefix ? findFromConfig(providers, drivePrefix) : null;
+            const advancedFields = new Set();
+            
+            if (currentProvider && currentProvider.Options) {
+                currentProvider.Options.forEach(opt => {
+                    if (opt.Advanced) {
+                        advancedFields.add(opt.Name);
+                    }
+                });
+            }
+            
+            for (const [key, value] of Object.entries(isValid)) {
+                if (!value) {
+                    const errorMsg = formErrors[key] || "Invalid value";
+                    if (advancedFields.has(key)) {
+                        invalidFieldsStep3.push(`${key}: ${errorMsg}`);
+                    } else {
+                        invalidFieldsStep2.push(`${key}: ${errorMsg}`);
+                    }
+                }
+            }
+            
+            // Special S3 validation
+            if (drivePrefix === "s3") {
+                const provider = formValues.provider || "";
+                const endpoint = formValues.endpoint || "";
+                if (provider !== "AWS" && provider !== "IBMCOS" && provider !== "Alibaba" && !endpoint.trim()) {
+                    errors.push("Endpoint is required for non-AWS S3 providers (Step 2)");
+                }
+            }
+            
+            // Build error message
+            let errorMessage = "Please fix the following errors before submitting:\n";
+            if (errors.length > 0) {
+                errorMessage += errors.map(e => `• ${e}`).join("\n");
+            }
+            if (invalidFieldsStep2.length > 0) {
+                errorMessage += "\n\nInvalid fields in Step 2:\n";
+                errorMessage += invalidFieldsStep2.slice(0, 5).map(f => `• ${f}`).join("\n");
+                if (invalidFieldsStep2.length > 5) {
+                    errorMessage += `\n... and ${invalidFieldsStep2.length - 5} more`;
+                }
+            }
+            if (invalidFieldsStep3.length > 0) {
+                errorMessage += "\n\nInvalid fields in Step 3 (Advanced Options):\n";
+                errorMessage += invalidFieldsStep3.slice(0, 5).map(f => `• ${f}`).join("\n");
+                if (invalidFieldsStep3.length > 5) {
+                    errorMessage += `\n... and ${invalidFieldsStep3.length - 5} more`;
+                }
+            }
+            
+            toast.error(errorMessage, {
+                autoClose: 10000,
+                style: { whiteSpace: 'pre-line' }
+            });
+            
+            // Scroll to first invalid field
+            setTimeout(() => {
+                const firstInvalidInput = document.querySelector('input.invalid, select.invalid');
+                if (firstInvalidInput) {
+                    firstInvalidInput.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    firstInvalidInput.focus();
+                }
+            }, 100);
+        }
+}
+
+/**
+ * Clears the entire form.
+ * Clearing the driveName and drivePrefix automatically clears the inputs as well.
+ * */
+export function clearForm(_) {
+        this.setState({driveName: "", drivePrefix: ""})
+}
+
+
+/**
+ * Change the name of the drive. Check if it already exists, if not, allow to be changes, else set error.
+ * */
+export function changeName(e) {
+        const {originalDriveName} = this.state;
+        const value = e.target.value;
+        
+        // Allow empty value (for deletion) or validate if not empty
+        if (value === "" || validateDriveName(value)) {
+            this.setState({driveName: value}, () => {
+                if (value === undefined || value === "") {
+                    this.setState({driveNameIsValid: false});
+                } else {
+                    // When editing, if the name equals the original name, it's always valid
+                    if (originalDriveName && value === originalDriveName) {
+                        this.setState({formErrors: {...this.state.formErrors, driveName: ""}, driveNameIsValid: true});
+                        return;
+                    }
+                    
+                    // Check if name already exists (for other remotes)
+                    axiosInstance.post(urls.getConfigForRemote, {name: value}).then((response) => {
+                        let errors = this.state.formErrors;
+                        let isValid = isEmpty(response.data);
+                        if (isValid) {
+                            errors["driveName"] = "";
+                        } else {
+                            errors["driveName"] = "Duplicate";
+                        }
+                        this.setState({formErrors: errors, driveNameIsValid: isValid});
+                    });
+                }
+            });
+        } else {
+            // Invalid character - don't update state, but show error
+            // This prevents invalid characters from being entered
+            const errors = {...this.state.formErrors};
+            errors["driveName"] = "Invalid characters in remote name";
+            this.setState({formErrors: errors});
+        }
+}
+
+/**
+ * Open the advanced settings card and scroll into view.
+ * @param e
+ */
+export function openAdvancedSettings(e) {
+        if (this.state.advancedOptions) {
+            this.setState({colAdvanced: true});
+        } else {
+            this.configEndDiv.scrollIntoView({behavior: "smooth"});
+        }
+}

@@ -115,10 +115,20 @@ class FilesView extends React.PureComponent {
             selectedItem: null,
             selectedFiles: new Set(), // Track selected file IDs for bulk operations
             showBulkDeleteModal: false,
-            isBulkDeleting: false
+            isBulkDeleting: false,
+            // Local filter + pagination (for large buckets/containers with 100k+ items).
+            // Applied on top of the already-filtered/sorted `files` prop.
+            localFilter: "",
+            pageSize: 100,
+            currentPage: 1,
+            // Shown after the spinner has been visible for a while; rclone listing of
+            // huge (e.g. Azure) containers can take tens of seconds because rclone has
+            // to walk every page internally before returning a result.
+            showSlowListingHint: false
 
 
         };
+        this._slowListingTimer = null;
         this.handleFileClick = this.handleFileClick.bind(this);
         this.downloadHandle = this.downloadHandle.bind(this);
         this.deleteHandle = this.deleteHandle.bind(this);
@@ -126,6 +136,74 @@ class FilesView extends React.PureComponent {
         this.toggleFileSelection = this.toggleFileSelection.bind(this);
         this.toggleSelectAll = this.toggleSelectAll.bind(this);
         this.handleBulkDelete = this.handleBulkDelete.bind(this);
+    }
+
+    componentDidMount() {
+        // Show the "large containers take a while" hint if the initial load
+        // is still in flight after 5s.
+        if (this.props.filesData === undefined) {
+            this._armSlowListingHint();
+        }
+    }
+
+    componentWillUnmount() {
+        this._clearSlowListingHint();
+    }
+
+    _armSlowListingHint = () => {
+        this._clearSlowListingHint();
+        this._slowListingTimer = setTimeout(() => {
+            this.setState({ showSlowListingHint: true });
+        }, 5000);
+    };
+
+    _clearSlowListingHint = () => {
+        if (this._slowListingTimer) {
+            clearTimeout(this._slowListingTimer);
+            this._slowListingTimer = null;
+        }
+    };
+
+    componentDidUpdate(prevProps, prevState) {
+        // Reset to page 1 whenever we navigate to a new path/remote or the file set changes significantly.
+        const prevKey = `${prevProps.currentPath?.remoteName}|${prevProps.currentPath?.remotePath}`;
+        const curKey = `${this.props.currentPath?.remoteName}|${this.props.currentPath?.remotePath}`;
+        if (prevKey !== curKey) {
+            // eslint-disable-next-line react/no-did-update-set-state
+            this.setState({ currentPage: 1, localFilter: "", showSlowListingHint: false });
+            // New location: if it's still loading, re-arm the hint timer.
+            if (this.props.filesData === undefined) {
+                this._armSlowListingHint();
+            } else {
+                this._clearSlowListingHint();
+            }
+            return;
+        }
+
+        // Loading state transitions for the slow-listing hint.
+        const wasLoading = prevProps.filesData === undefined;
+        const isLoading = this.props.filesData === undefined;
+        if (!wasLoading && isLoading) {
+            // Started loading (e.g. manual refresh)
+            this._armSlowListingHint();
+            // eslint-disable-next-line react/no-did-update-set-state
+            this.setState({ showSlowListingHint: false });
+        } else if (wasLoading && !isLoading) {
+            // Finished loading
+            this._clearSlowListingHint();
+            if (this.state.showSlowListingHint) {
+                // eslint-disable-next-line react/no-did-update-set-state
+                this.setState({ showSlowListingHint: false });
+            }
+        }
+
+        // If filter changed or file count shrank below current page, clamp the page.
+        const filtered = this.getLocallyFilteredFiles(this.props.files || [], this.state.localFilter);
+        const maxPage = Math.max(1, Math.ceil(filtered.length / this.state.pageSize));
+        if (this.state.currentPage > maxPage) {
+            // eslint-disable-next-line react/no-did-update-set-state
+            this.setState({ currentPage: maxPage });
+        }
     }
 
     closeLinkShareModal = () => {
@@ -167,17 +245,30 @@ class FilesView extends React.PureComponent {
         });
     }
 
+    getCurrentPagedFiles = () => {
+        const files = this.props.files || [];
+        const {localFilter, pageSize, currentPage} = this.state;
+        const locallyFiltered = this.getLocallyFilteredFiles(files, localFilter);
+        const totalPages = Math.max(1, Math.ceil(locallyFiltered.length / pageSize));
+        const safePage = Math.min(Math.max(1, currentPage), totalPages);
+        const startIdx = (safePage - 1) * pageSize;
+        const endIdx = Math.min(startIdx + pageSize, locallyFiltered.length);
+        return locallyFiltered.slice(startIdx, endIdx);
+    };
+
     toggleSelectAll() {
-        const { files } = this.props;
+        const pageFiles = this.getCurrentPagedFiles();
         this.setState(prevState => {
-            const newSelected = new Set();
-            // If not all are selected, select all; otherwise, deselect all
-            if (prevState.selectedFiles.size !== files.length) {
-                files.forEach(item => {
-                    const fileId = item.ID || item.Name;
-                    newSelected.add(fileId);
-                });
+            const newSelected = new Set(prevState.selectedFiles);
+            const pageIds = pageFiles.map(item => item.ID || item.Name);
+            const allPageSelected = pageIds.length > 0 && pageIds.every(id => newSelected.has(id));
+
+            if (allPageSelected) {
+                pageIds.forEach(id => newSelected.delete(id));
+            } else {
+                pageIds.forEach(id => newSelected.add(id));
             }
+
             return { selectedFiles: newSelected };
         });
     }
@@ -386,10 +477,11 @@ class FilesView extends React.PureComponent {
 
     };
 
-    getFileComponents = (isDir) => {
-        const {files, containerID, gridMode, fsInfo, loadImages} = this.props;
+    getFileComponents = (isDir, sourceFiles) => {
+        const {containerID, gridMode, fsInfo, loadImages} = this.props;
         const {remoteName, remotePath} = this.props.currentPath;
         const {downloadingFileIds, selectedFiles} = this.state;
+        const files = sourceFiles || this.props.files || [];
         // console.log(fsInfo, files);
         if (fsInfo && !isEmpty(fsInfo)) {
             return files.reduce((result, item) => {
@@ -424,6 +516,25 @@ class FilesView extends React.PureComponent {
         }
     };
 
+    getLocallyFilteredFiles = (files, localFilter) => {
+        if (!localFilter) return files;
+        const q = localFilter.toLowerCase();
+        return files.filter((f) => (f.Name || "").toLowerCase().includes(q));
+    };
+
+    handleLocalFilterChange = (e) => {
+        this.setState({ localFilter: e.target.value, currentPage: 1 });
+    };
+
+    handlePageSizeChange = (e) => {
+        const newSize = parseInt(e.target.value, 10) || 100;
+        this.setState({ pageSize: newSize, currentPage: 1 });
+    };
+
+    goToPage = (page) => {
+        this.setState({ currentPage: page });
+    };
+
     applySortFilter = (sortFilter) => {
         const {changeSortFilter, containerID} = this.props;
 
@@ -447,7 +558,31 @@ class FilesView extends React.PureComponent {
 
         // Show spinner if loading (filesData is undefined means request hasn't completed yet)
         if (isLoading || filesData === undefined) {
-            return (<div><Spinner color="primary"/> Loading</div>);
+            return (
+                <div style={{ padding: '20px', textAlign: 'center' }}>
+                    <Spinner color="primary"/> Loading
+                    {this.state.showSlowListingHint && (
+                        <div style={{
+                            marginTop: '14px',
+                            padding: '10px 14px',
+                            maxWidth: '560px',
+                            marginLeft: 'auto',
+                            marginRight: 'auto',
+                            backgroundColor: '#fff3cd',
+                            border: '1px solid #ffeeba',
+                            color: '#856404',
+                            borderRadius: '4px',
+                            fontSize: '13px',
+                            textAlign: 'left'
+                        }}>
+                            <i className="fa fa-info-circle" style={{ marginRight: '6px' }}/>
+                            This is taking a while. Containers or folders with a very large number
+                            of files (hundreds of thousands) can take a long time to enumerate — rclone
+                            has to walk the entire listing before it can return any results. Please hang on.
+                        </div>
+                    )}
+                </div>
+            );
         }
         
         // Show error message if there was an error loading files
@@ -487,9 +622,99 @@ class FilesView extends React.PureComponent {
             }
 
 
-            let dirComponentMap = this.getFileComponents(true);
+            // Apply local filter + pagination on top of the already redux-filtered+sorted list.
+            const {localFilter, pageSize, currentPage} = this.state;
+            const locallyFiltered = this.getLocallyFilteredFiles(files, localFilter);
+            const totalFiltered = locallyFiltered.length;
+            const totalPages = Math.max(1, Math.ceil(totalFiltered / pageSize));
+            const safePage = Math.min(Math.max(1, currentPage), totalPages);
+            const startIdx = (safePage - 1) * pageSize;
+            const endIdx = Math.min(startIdx + pageSize, totalFiltered);
+            const pagedFiles = locallyFiltered.slice(startIdx, endIdx);
 
-            let fileComponentMap = this.getFileComponents(false);
+            const pageIds = pagedFiles.map(item => item.ID || item.Name);
+            const allPageSelected = pageIds.length > 0 && pageIds.every(id => this.state.selectedFiles.has(id));
+
+            let dirComponentMap = this.getFileComponents(true, pagedFiles);
+
+            let fileComponentMap = this.getFileComponents(false, pagedFiles);
+
+            // Filter + pagination header bar: always shown above the file list.
+            const filterBar = (
+                <div style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '10px',
+                    padding: '8px 12px',
+                    backgroundColor: '#f8f9fa',
+                    borderBottom: '1px solid #dee2e6',
+                    flexWrap: 'wrap'
+                }}>
+                    <Input
+                        type="text"
+                        bsSize="sm"
+                        placeholder="Filter files/folders in this location..."
+                        value={localFilter}
+                        onChange={this.handleLocalFilterChange}
+                        style={{ flex: '1 1 220px', minWidth: '180px', maxWidth: '420px' }}
+                    />
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', color: '#555' }}>
+                        <span>Show</span>
+                        <Input
+                            type="select"
+                            bsSize="sm"
+                            value={pageSize}
+                            onChange={this.handlePageSizeChange}
+                            style={{ width: '80px' }}
+                        >
+                            <option value={50}>50</option>
+                            <option value={100}>100</option>
+                            <option value={250}>250</option>
+                            <option value={500}>500</option>
+                            <option value={1000}>1000</option>
+                        </Input>
+                        <span>per page</span>
+                    </div>
+                    <div style={{ fontSize: '13px', color: '#555', marginLeft: 'auto', whiteSpace: 'nowrap' }}>
+                        {totalFiltered === 0
+                            ? (localFilter ? 'No matches' : 'Empty')
+                            : `${startIdx + 1}–${endIdx} of ${totalFiltered.toLocaleString()}${localFilter ? ` (filtered from ${files.length.toLocaleString()})` : ''}`
+                        }
+                    </div>
+                </div>
+            );
+
+            const paginationBar = totalPages > 1 ? (
+                <div style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '6px',
+                    padding: '8px',
+                    borderTop: '1px solid #dee2e6',
+                    backgroundColor: '#f8f9fa'
+                }}>
+                    <Button size="sm" color="light" disabled={safePage === 1}
+                            onClick={() => this.goToPage(1)} title="First page">
+                        <i className="fa fa-angle-double-left"/>
+                    </Button>
+                    <Button size="sm" color="light" disabled={safePage === 1}
+                            onClick={() => this.goToPage(safePage - 1)} title="Previous page">
+                        <i className="fa fa-angle-left"/>
+                    </Button>
+                    <span style={{ fontSize: '13px', padding: '0 8px' }}>
+                        Page <strong>{safePage}</strong> of <strong>{totalPages}</strong>
+                    </span>
+                    <Button size="sm" color="light" disabled={safePage === totalPages}
+                            onClick={() => this.goToPage(safePage + 1)} title="Next page">
+                        <i className="fa fa-angle-right"/>
+                    </Button>
+                    <Button size="sm" color="light" disabled={safePage === totalPages}
+                            onClick={() => this.goToPage(totalPages)} title="Last page">
+                        <i className="fa fa-angle-double-right"/>
+                    </Button>
+                </div>
+            ) : null;
 
             let renderElement = "";
 
@@ -498,6 +723,8 @@ class FilesView extends React.PureComponent {
                 renderElement = (
 
                     <Container fluid={true} style={{display: 'flex', flexDirection: 'column', flex: 1, overflow: 'hidden', minHeight: 0}}>
+
+                        {filterBar}
 
                         <Row style={{flex: 1, display: 'flex', overflow: 'hidden', margin: 0}}>
                             <Col lg={3} style={{display: 'flex', flexDirection: 'column', overflow: 'hidden'}}>
@@ -515,6 +742,7 @@ class FilesView extends React.PureComponent {
 
                         </Row>
 
+                        {paginationBar}
 
                     </Container>
 
@@ -527,6 +755,8 @@ class FilesView extends React.PureComponent {
                 renderElement = (
 
                     <Container fluid={true} className={"p-0"} style={{display: 'flex', flexDirection: 'column', flex: 1, overflow: 'hidden', minHeight: 0}}>
+
+                        {filterBar}
 
                         <ScrollableDiv height="100%" style={{flex: 1, minHeight: 0}}>
 
@@ -572,7 +802,7 @@ class FilesView extends React.PureComponent {
                                     <th style={{width: '50px', textAlign: 'center', verticalAlign: 'middle', paddingLeft: '15px', position: 'relative'}}>
                                         <Input 
                                             type="checkbox" 
-                                            checked={this.state.selectedFiles.size > 0 && this.state.selectedFiles.size === files.length}
+                                            checked={allPageSelected}
                                             onChange={this.toggleSelectAll}
                                             style={{cursor: 'pointer', margin: '0', position: 'static'}}
                                         />
@@ -590,7 +820,7 @@ class FilesView extends React.PureComponent {
                                 </tr>
                                 </thead>
                                 <tbody>
-                                {files.length > 0 ? (
+                                {totalFiltered > 0 ? (
                                         <React.Fragment>
                                             {dirComponentMap}
                                             {fileComponentMap}
@@ -602,6 +832,8 @@ class FilesView extends React.PureComponent {
                                                 <div style={{color: '#dc3545'}}>
                                                     <i className="fa fa-exclamation-triangle"></i> Error loading files - {filesError?.response?.data?.error || filesError?.message || 'Unknown error'}
                                                 </div>
+                                            ) : localFilter ? (
+                                                <span>No files match "<strong>{localFilter}</strong>" in this location.</span>
                                             ) : (
                                                 'Empty - No files or directories'
                                             )}
@@ -611,6 +843,8 @@ class FilesView extends React.PureComponent {
                                 </tbody>
                             </Table>
                         </ScrollableDiv>
+
+                        {paginationBar}
                     </Container>
 
 

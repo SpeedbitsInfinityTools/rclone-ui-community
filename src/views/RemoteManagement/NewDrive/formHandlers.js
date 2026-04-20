@@ -8,14 +8,16 @@ export function parseAzureSasInput(input) {
         const trimmed = input.trim();
         
         // Connection string with SAS: "BlobEndpoint=https://...;SharedAccessSignature=sv=..."
-        if (trimmed.includes('SharedAccessSignature=')) {
-            const sasMatch = trimmed.match(/SharedAccessSignature=(.+?)$/);
-            const blobMatch = trimmed.match(/BlobEndpoint=(https?:\/\/[^;]+)/);
-            const accountNameMatch = trimmed.match(/AccountName=([^;]+)/);
+        // or: "SharedAccessSignature=sv=...&sig=...%3D;BlobEndpoint=https://...;..."
+        // SAS tokens are URL-encoded and never contain a raw ';', so we stop at ';' or end-of-string.
+        if (/SharedAccessSignature=/i.test(trimmed)) {
+            const sasMatch = trimmed.match(/SharedAccessSignature=([^;]+)/i);
+            const blobMatch = trimmed.match(/BlobEndpoint=(https?:\/\/[^;]+)/i);
+            const accountNameMatch = trimmed.match(/AccountName=([^;]+)/i);
             
             if (blobMatch && sasMatch) {
                 const blobEndpoint = blobMatch[1].replace(/\/$/, '');
-                const sasToken = sasMatch[1];
+                const sasToken = sasMatch[1].replace(/^\?/, '');
                 const accountMatch = blobEndpoint.match(/https?:\/\/([^.]+)\./);
                 return {
                     sasUrl: `${blobEndpoint}?${sasToken}`,
@@ -25,8 +27,9 @@ export function parseAzureSasInput(input) {
             }
             // No BlobEndpoint but has AccountName - construct the URL
             if (accountNameMatch && sasMatch) {
+                const sasToken = sasMatch[1].replace(/^\?/, '');
                 return {
-                    sasUrl: `https://${accountNameMatch[1]}.blob.core.windows.net?${sasMatch[1]}`,
+                    sasUrl: `https://${accountNameMatch[1]}.blob.core.windows.net?${sasToken}`,
                     account: accountNameMatch[1],
                     type: 'Azure connection string (SAS)'
                 };
@@ -34,9 +37,9 @@ export function parseAzureSasInput(input) {
         }
         
         // Connection string with AccountKey (no SAS): "DefaultEndpointsProtocol=https;AccountName=...;AccountKey=..."
-        if (trimmed.includes('AccountKey=') && trimmed.includes('AccountName=')) {
-            const accountNameMatch = trimmed.match(/AccountName=([^;]+)/);
-            const accountKeyMatch = trimmed.match(/AccountKey=([^;]+={0,2})/);
+        if (/AccountKey=/i.test(trimmed) && /AccountName=/i.test(trimmed)) {
+            const accountNameMatch = trimmed.match(/AccountName=([^;]+)/i);
+            const accountKeyMatch = trimmed.match(/AccountKey=([^;]+={0,2})/i);
             if (accountNameMatch && accountKeyMatch) {
                 return {
                     account: accountNameMatch[1],
@@ -77,11 +80,7 @@ export function handleInputChange(e) {
         
         // Azure Blob: auto-parse connection strings pasted into ANY field
         if (this.state.drivePrefix === 'azureblob' && inputValue) {
-            const looksLikeConnString = inputValue.includes('BlobEndpoint=') 
-                || inputValue.includes('SharedAccessSignature=')
-                || inputValue.includes('AccountKey=')
-                || inputValue.includes('AccountName=')
-                || inputValue.includes('DefaultEndpointsProtocol=');
+            const looksLikeConnString = /BlobEndpoint=|SharedAccessSignature=|AccountKey=|AccountName=|DefaultEndpointsProtocol=/i.test(inputValue);
             
             if ((inputName === 'sas_url' || inputName === 'key' || inputName === 'account') && looksLikeConnString) {
                 const parsed = this.parseAzureSasInput(inputValue);
@@ -453,9 +452,9 @@ export async function handleSubmit(e) {
           // Azure: validate sas_url doesn't contain a raw connection string
           if (drivePrefix === 'azureblob') {
               const sasVal = finalParameterValues.sas_url || '';
-              const connStringMarkers = ['BlobEndpoint=', 'SharedAccessSignature=', 'QueueEndpoint=',
-                  'FileEndpoint=', 'TableEndpoint=', 'AccountKey=', 'AccountName=', 'DefaultEndpointsProtocol='];
-              if (sasVal && connStringMarkers.some(m => sasVal.includes(m))) {
+              const connStringMarkers = ['blobendpoint=', 'sharedaccesssignature=', 'queueendpoint=',
+                  'fileendpoint=', 'tableendpoint=', 'accountkey=', 'accountname=', 'defaultendpointsprotocol='];
+              if (sasVal && connStringMarkers.some(m => sasVal.toLowerCase().includes(m))) {
                   const parsed = this.parseAzureSasInput(sasVal);
                   if (parsed && parsed.key) {
                       finalParameterValues.account = parsed.account || '';

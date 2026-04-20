@@ -771,19 +771,30 @@ class NewDrive extends React.Component {
                                                 <><i className="fa fa-plug"/> Test Config</>
                                             )}
                                         </Button>
-                                        {this.state.testResults.tested && (
-                                            <div style={{marginTop: "10px", fontSize: "12px"}}>
-                                                {this.state.testResults.connectionTest === true && (
-                                                    <div className="text-success"><i className="fa fa-check-circle"/> Connection OK</div>
-                                                )}
-                                                {this.state.testResults.connectionTest === false && (
-                                                    <div className="text-danger"><i className="fa fa-times-circle"/> Connection failed</div>
-                                                )}
-                                                {this.state.testResults.error && (
-                                                    <div className="text-danger" style={{marginTop: "5px", fontSize: "11px"}}>{this.state.testResults.error}</div>
-                                                )}
-                                            </div>
-                                        )}
+                                        {this.state.testResults.tested && (() => {
+                                            const {connectionTest, readTest, writeTest, error} = this.state.testResults;
+                                            const isWriteOnlyFailure = connectionTest === true && readTest === true && writeTest === false;
+                                            return (
+                                                <div style={{marginTop: "10px", fontSize: "12px"}}>
+                                                    {connectionTest === true && (
+                                                        <div className="text-success"><i className="fa fa-check-circle"/> Connection OK</div>
+                                                    )}
+                                                    {connectionTest === false && (
+                                                        <div className="text-danger"><i className="fa fa-times-circle"/> Connection failed</div>
+                                                    )}
+                                                    {error && (
+                                                        <div
+                                                            className={isWriteOnlyFailure ? "text-warning" : "text-danger"}
+                                                            style={{marginTop: "5px", fontSize: "11px"}}
+                                                        >
+                                                            {isWriteOnlyFailure
+                                                                ? <>Write access is not allowed (read-only credentials). Details: {error}</>
+                                                                : error}
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            );
+                                        })()}
                                     </div>
                                 </Col>
                             </Row>
@@ -874,19 +885,30 @@ class NewDrive extends React.Component {
                                                 <><i className="fa fa-plug"/> Test Config</>
                                             )}
                                         </Button>
-                                        {this.state.testResults.tested && (
-                                            <div style={{marginTop: "10px", fontSize: "12px"}}>
-                                                {this.state.testResults.connectionTest === true && (
-                                                    <div className="text-success"><i className="fa fa-check-circle"/> Connection OK</div>
-                                                )}
-                                                {this.state.testResults.connectionTest === false && (
-                                                    <div className="text-danger"><i className="fa fa-times-circle"/> Connection failed</div>
-                                                )}
-                                                {this.state.testResults.error && (
-                                                    <div className="text-danger" style={{marginTop: "5px", fontSize: "11px"}}>{this.state.testResults.error}</div>
-                                                )}
-                                            </div>
-                                        )}
+                                        {this.state.testResults.tested && (() => {
+                                            const {connectionTest, readTest, writeTest, error} = this.state.testResults;
+                                            const isWriteOnlyFailure = connectionTest === true && readTest === true && writeTest === false;
+                                            return (
+                                                <div style={{marginTop: "10px", fontSize: "12px"}}>
+                                                    {connectionTest === true && (
+                                                        <div className="text-success"><i className="fa fa-check-circle"/> Connection OK</div>
+                                                    )}
+                                                    {connectionTest === false && (
+                                                        <div className="text-danger"><i className="fa fa-times-circle"/> Connection failed</div>
+                                                    )}
+                                                    {error && (
+                                                        <div
+                                                            className={isWriteOnlyFailure ? "text-warning" : "text-danger"}
+                                                            style={{marginTop: "5px", fontSize: "11px"}}
+                                                        >
+                                                            {isWriteOnlyFailure
+                                                                ? <>Write access is not allowed (read-only credentials). Details: {error}</>
+                                                                : error}
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            );
+                                        })()}
                                     </div>
                                 </Col>
                             </Row>
@@ -1094,15 +1116,24 @@ class NewDrive extends React.Component {
                                                         {this.state.testResults.writeTest === null && <span className="text-muted">Not tested</span>}
                                                     </td>
                                                 </tr>
-                                                {this.state.testResults.error && (
-                                                    <tr>
-                                                        <td colSpan="2">
-                                                            <div className="alert alert-danger mb-0 mt-2">
-                                                                <strong>Error:</strong> {this.state.testResults.error}
-                                                            </div>
-                                                        </td>
-                                                    </tr>
-                                                )}
+                                                {this.state.testResults.error && (() => {
+                                                    const {connectionTest, readTest, writeTest} = this.state.testResults;
+                                                    // Write-only failure (connection + read OK) = read-only remote, not a hard failure
+                                                    const isWriteOnlyFailure = connectionTest === true && readTest === true && writeTest === false;
+                                                    const alertClass = isWriteOnlyFailure ? "alert alert-warning mb-0 mt-2" : "alert alert-danger mb-0 mt-2";
+                                                    const heading = isWriteOnlyFailure
+                                                        ? <span><strong>Connection works, but writing is not allowed.</strong> The remote appears to be read-only. This is fine for sync/mount sources; you just won't be able to upload or delete. Details:</span>
+                                                        : <strong>Error:</strong>;
+                                                    return (
+                                                        <tr>
+                                                            <td colSpan="2">
+                                                                <div className={alertClass}>
+                                                                    {heading}{' '}{this.state.testResults.error}
+                                                                </div>
+                                                            </td>
+                                                        </tr>
+                                                    );
+                                                })()}
                                             </tbody>
                                         </table>
                                     </div>

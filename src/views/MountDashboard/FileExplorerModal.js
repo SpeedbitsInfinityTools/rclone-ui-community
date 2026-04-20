@@ -72,15 +72,35 @@ const FileExplorerModal = ({
         }
     };
 
+    // Strip the "/host" prefix (case-insensitive) before returning a path
+    // to the caller. Inside the container, "/host" is just the read-only
+    // bind-mount of the host root, but rclone (running in the same container)
+    // needs the raw host path when creating mounts/syncs/backups.
+    //   "/host"          -> "/"
+    //   "/host/mnt/foo"  -> "/mnt/foo"
+    //   "/HOST/etc"      -> "/etc"
+    //   "/mnt/foo"       -> "/mnt/foo"  (unchanged)
+    const stripHostPrefix = (p) => {
+        if (typeof p !== 'string' || !p) return p;
+        if (/^\/host$/i.test(p)) return '/';
+        if (/^\/host\//i.test(p)) return p.slice(5);
+        return p;
+    };
+
+    const emitSelection = (paths) => {
+        const stripped = paths.map(stripHostPrefix);
+        onSelect(stripped);
+    };
+
     const handleItemDoubleClick = (item) => {
         if (selectMode === 'directories' && item.is_directory) {
-            onSelect([item.path]);
+            emitSelection([item.path]);
             onClose();
         }
     };
 
     const useCurrentDirectory = () => {
-        onSelect([currentPath]);
+        emitSelection([currentPath]);
         onClose();
     };
 
@@ -116,7 +136,36 @@ const FileExplorerModal = ({
     const isRoot = currentPath === '/';
     const breadcrumbs = buildBreadcrumbs();
 
-    const filteredItems = items.filter((item) =>
+    // When browsing root ("/"), surface a synthetic HOST entry at the top
+    // so users in Docker always see a clear entry point to the host filesystem,
+    // even if the real /host directory wasn't picked up by the listing.
+    const itemsWithHost = (() => {
+        if (currentPath !== '/') return items;
+        const alreadyHasHost = items.some((it) => it.path === '/host');
+        const hostEntry = {
+            name: 'HOST',
+            path: '/host',
+            is_directory: true,
+            is_file: false,
+            is_symlink: false,
+            size: null,
+            modified: null,
+            is_accessible: true,
+            permissions: null,
+            _virtual_host: true,
+        };
+        if (alreadyHasHost) {
+            // Promote the real /host entry to a styled HOST row instead of duplicating.
+            return items.map((it) => (
+                (it.path === '/host')
+                    ? { ...it, name: 'HOST', _virtual_host: true }
+                    : it
+            ));
+        }
+        return [hostEntry, ...items];
+    })();
+
+    const filteredItems = itemsWithHost.filter((item) =>
         item.name.toLowerCase().includes(searchFilter.toLowerCase())
     );
 
@@ -246,7 +295,7 @@ const FileExplorerModal = ({
                             </thead>
                             <tbody>
                                 {filteredItems.map((item) => {
-                                    const isHostMount = item.path === '/host' && item.is_directory;
+                                    const isHostMount = (item.path === '/host' && item.is_directory) || item._virtual_host === true;
                                     return (
                                         <tr
                                             key={item.path}

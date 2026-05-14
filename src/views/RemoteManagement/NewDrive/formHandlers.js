@@ -69,6 +69,115 @@ export function parseAzureSasInput(input) {
 }
 
 /**
+ * Validate the shape of an Azure Blob `sas_url` value before saving / testing.
+ *
+ * The wizard's old behaviour silently saved any string the user put in `sas_url` and
+ * relied on rclone to fail downstream — which it does, but very ambiguously (often as
+ * a generic 500 only when the user finally clicks into a folder in Explorer).
+ *
+ * This validator catches the common bad shapes up-front, with explanations:
+ *   - missing https:// scheme (e.g. user pasted only the hostname)
+ *   - missing the `?<sas-token>` part
+ *   - missing required SAS fields `sig=` / `sv=`
+ *   - IP-restricted SAS (`sip=`) — likely to 403 from servers with a different egress IP
+ *   - container-scoped SAS (`sr=c`) without `/<container>` in the path
+ *   - expired SAS (`se=` in the past)
+ *
+ * Returns: { ok: boolean, error: string|null, warnings: string[] }
+ * - ok=false + error  -> hard validation failure, do not save.
+ * - ok=true + warnings -> save is OK, but surface warnings to the user.
+ */
+export function validateAzureSasUrl(sasUrl) {
+    const result = { ok: true, error: null, warnings: [] };
+    if (!sasUrl) return result;
+
+    const trimmed = String(sasUrl).trim();
+
+    if (!/^https?:\/\//i.test(trimmed)) {
+        result.ok = false;
+        result.error =
+            "SAS URL must start with https:// — it looks like only a hostname or token was pasted. " +
+            "Use the full 'Blob SAS URL' from Azure (e.g. https://<account>.blob.core.windows.net/<container>?sv=...&sig=...).";
+        return result;
+    }
+
+    if (!/\.blob\./i.test(trimmed)) {
+        result.ok = false;
+        result.error =
+            "SAS URL must point to a Blob endpoint (got something else, e.g. file/queue/table). " +
+            "It should look like: https://<account>.blob.core.windows.net/<container>?sv=...&sig=...";
+        return result;
+    }
+
+    const qIndex = trimmed.indexOf('?');
+    if (qIndex === -1) {
+        result.ok = false;
+        result.error =
+            "SAS URL is missing the '?<sas-token>' part. Did you paste only the endpoint without the SAS token?";
+        return result;
+    }
+
+    const queryString = trimmed.slice(qIndex + 1);
+    if (!/(^|&)sig=[^&]+/.test(queryString)) {
+        result.ok = false;
+        result.error = "SAS URL is missing 'sig=' — that isn't a valid SAS token.";
+        return result;
+    }
+    if (!/(^|&)sv=[^&]+/.test(queryString)) {
+        result.ok = false;
+        result.error = "SAS URL is missing 'sv=' (Storage API version) — that isn't a valid SAS token.";
+        return result;
+    }
+
+    // ---- Warnings (non-blocking) -------------------------------------------
+
+    const sipMatch = queryString.match(/(?:^|&)sip=([^&]+)/);
+    if (sipMatch) {
+        let sipVal;
+        try { sipVal = decodeURIComponent(sipMatch[1]); } catch (e) { sipVal = sipMatch[1]; }
+        result.warnings.push(
+            `This SAS is IP-restricted to '${sipVal}'. The server running rclone must have its outbound public IP exactly match this value, ` +
+            `otherwise every request will get HTTP 403 from Azure (which the UI surfaces as a generic 500 in the Explorer). ` +
+            `If unsure, regenerate the SAS without an IP restriction, or regenerate it from the rclone host.`
+        );
+    }
+
+    const srMatch = queryString.match(/(?:^|&)sr=([^&]+)/);
+    if (srMatch && (srMatch[1] === 'c' || srMatch[1] === 'b')) {
+        // Container- or blob-scoped SAS must include the container in the path.
+        let pathOnly = '';
+        try {
+            const u = new URL(trimmed);
+            pathOnly = u.pathname || '';
+        } catch (e) {
+            pathOnly = '';
+        }
+        const pathSegments = pathOnly.split('/').filter(p => p.length > 0);
+        if (pathSegments.length === 0) {
+            result.warnings.push(
+                `This is a container/blob-scoped SAS ('sr=${srMatch[1]}') but the URL has no container in its path. ` +
+                `It should look like: https://<account>.blob.core.windows.net/<container-name>?sv=...&sig=... ` +
+                `Without the container in the path, listing inside containers will fail in the Explorer.`
+            );
+        }
+    }
+
+    const seMatch = queryString.match(/(?:^|&)se=([^&]+)/);
+    if (seMatch) {
+        try {
+            const expiry = new Date(decodeURIComponent(seMatch[1]));
+            if (!isNaN(expiry.getTime()) && expiry < new Date()) {
+                result.warnings.push(`This SAS expired on ${expiry.toISOString()} — Azure will reject all requests.`);
+            }
+        } catch (e) {
+            // ignore parse failures
+        }
+    }
+
+    return result;
+}
+
+/**
  * Handle input change and set appropriate errors.
  * @param e
  */
@@ -470,6 +579,24 @@ export async function handleSubmit(e) {
                       toast.error("The SAS URL field contains a connection string that could not be parsed. Please paste only the 'Blob service SAS URL'.");
                       this.setState({ saving: false });
                       return;
+                  }
+              }
+
+              // Hard-validate the shape of sas_url (only if user actually uses SAS auth,
+              // i.e. no account/key combo provided). Catches: missing https://, missing
+              // ?<token>, missing sig=/sv=, IP-restricted, container-scoped without
+              // container in the path, expired SAS.
+              const finalSas = finalParameterValues.sas_url || '';
+              const hasAccountKey = !!(finalParameterValues.account && finalParameterValues.key);
+              if (finalSas && !hasAccountKey) {
+                  const v = this.validateAzureSasUrl(finalSas);
+                  if (!v.ok) {
+                      toast.error(`Azure SAS URL is invalid: ${v.error}`, { autoClose: 12000 });
+                      this.setState({ saving: false });
+                      return;
+                  }
+                  if (v.warnings.length > 0) {
+                      v.warnings.forEach(w => toast.warn(`Azure SAS: ${w}`, { autoClose: 12000 }));
                   }
               }
           }

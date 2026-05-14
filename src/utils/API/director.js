@@ -429,6 +429,19 @@ export async function createDirectory(targetPath) {
     return response.data;
 }
 
+/**
+ * Stat the owner (UID/GID/mode) of a path. If the path itself does not exist
+ * yet, the Director walks up to the first existing ancestor — useful when the
+ * mount point hasn't been created yet but we still want sensible UID/GID
+ * defaults derived from the parent directory's owner.
+ */
+export async function statOwner(targetPath) {
+    const response = await directorAPI.get('/filesystem/stat-owner', {
+        params: { path: targetPath }
+    });
+    return response.data;
+}
+
 // ============================================================================
 // HEALTH CHECK
 // ============================================================================

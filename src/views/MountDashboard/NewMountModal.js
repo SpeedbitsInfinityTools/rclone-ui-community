@@ -1,4 +1,4 @@
-import React, {useState} from 'react';
+import React, {useState, useEffect} from 'react';
 import {
     Button,
     Col,
@@ -22,7 +22,7 @@ import * as PropTypes from "prop-types"
 import {mountOptions, vfsOptions} from "../../utils/MountOptions";
 import {isEmpty, validateDuration, validateInt, validateSizeSuffix} from "../../utils/Tools";
 import {toast} from "react-toastify";
-import {createMount as directorCreateMount} from "../../utils/API/director";
+import {createMount as directorCreateMount, statOwner} from "../../utils/API/director";
 import axiosInstance from "../../utils/API/API";
 import PathSelectorField from "./PathSelectorField";
 import ContainerSelector from "./ContainerSelector";
@@ -125,7 +125,17 @@ const NewMountModal = (props) => {
     const [permanent, setPermanent] = useState(true); // Default to permanent (survives reboot)
     
     const [readOnly, setReadOnly] = useState(false);
-    
+
+    // Owner auto-detect: stat the mount point (or its first existing ancestor)
+    // so we can pre-populate vfsOpt.UID / vfsOpt.GID. Without this, rclone runs
+    // as root (per the rclone-ui-backend systemd unit) and writes show up as
+    // root-owned, leaving the actual host user with EACCES on writes.
+    const [autoOwner, setAutoOwner] = useState(null);
+    const [autoOwnerError, setAutoOwnerError] = useState(null);
+    // Track whether the user has manually edited UID/GID — if so we no longer
+    // overwrite their choice from auto-detect.
+    const [uidGidUserEdited, setUidGidUserEdited] = useState(false);
+
     // Bandwidth limiting
     const [bandwidthLimit, setBandwidthLimit] = useState(0); // 0 = unlimited
     const [bandwidthUnit, setBandwidthUnit] = useState("M"); // K, M, G
@@ -177,6 +187,49 @@ const NewMountModal = (props) => {
 
     const [mountOptionsValues, setMountOptionsValues] = useState({});
 
+    // When the mount point changes, ask the Director who owns it (or its first
+    // existing ancestor) and pre-fill vfsOpt.UID / vfsOpt.GID so the mount is
+    // actually writable from a host shell as that user. Skipped if the user
+    // already touched UID/GID via Advanced Options.
+    useEffect(() => {
+        if (!modal) return;
+        if (!mountPoint || typeof mountPoint !== 'string' || !mountPoint.startsWith('/')) {
+            setAutoOwner(null);
+            setAutoOwnerError(null);
+            return;
+        }
+        let cancelled = false;
+        (async () => {
+            try {
+                const result = await statOwner(mountPoint);
+                if (cancelled) return;
+                if (result?.success && result.data) {
+                    setAutoOwner(result.data);
+                    setAutoOwnerError(null);
+                    if (!uidGidUserEdited) {
+                        setVfsOptionsValues((prev) => ({
+                            ...prev,
+                            UID: result.data.uid,
+                            GID: result.data.gid,
+                        }));
+                    }
+                } else {
+                    setAutoOwner(null);
+                    setAutoOwnerError(result?.error || 'Could not detect owner');
+                }
+            } catch (err) {
+                if (cancelled) return;
+                setAutoOwner(null);
+                setAutoOwnerError(err?.response?.data?.error || err.message || 'Owner lookup failed');
+            }
+        })();
+        return () => { cancelled = true; };
+        // intentionally omit uidGidUserEdited so a re-pick of the mount point
+        // still refreshes the displayed auto-detection (we just don't overwrite
+        // the field values once the user has edited them)
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [mountPoint, modal]);
+
     const toggle = () => {
         setModal(!modal);
         // Reset advanced options when closing the modal
@@ -191,6 +244,9 @@ const NewMountModal = (props) => {
             setShowContainerSelector(false);
             setSelectedContainers(new Set());
             setTotalContainers(0);
+            setAutoOwner(null);
+            setAutoOwnerError(null);
+            setUidGidUserEdited(false);
         }
     };
     
@@ -580,6 +636,13 @@ const NewMountModal = (props) => {
             [inputName]: inputValue
         });
 
+        // If the user manually edits UID or GID in Advanced Options, stop the
+        // auto-detect from overwriting their choice on subsequent mount-point
+        // changes.
+        if (setFormValues === setVfsOptionsValues && (inputName === 'UID' || inputName === 'GID')) {
+            setUidGidUserEdited(true);
+        }
+
         let validateResult = true;
         let error = "";
         if (inputType === "SizeSuffix") {
@@ -878,6 +941,59 @@ const NewMountModal = (props) => {
                             </FormGroup>
                         </Col>
                     </FormGroup>}
+
+                    {mountFs && !readOnly && (autoOwner || autoOwnerError) && (
+                        <FormGroup row>
+                            <Label sm={3}></Label>
+                            <Col sm={9}>
+                                {autoOwner ? (
+                                    <div style={{
+                                        fontSize: '12px',
+                                        backgroundColor: uidGidUserEdited ? '#fff8e1' : '#e8f4fd',
+                                        border: `1px solid ${uidGidUserEdited ? '#ffe082' : '#bee5eb'}`,
+                                        borderRadius: '4px',
+                                        padding: '8px 10px',
+                                        color: '#0c5460',
+                                    }}>
+                                        <i className="fa fa-user-circle" style={{ marginRight: '6px' }} />
+                                        {uidGidUserEdited ? (
+                                            <>
+                                                <strong>Host owner override active.</strong>{' '}
+                                                Files in this mount will appear owned by the UID/GID you set in <em>Advanced Options</em>.
+                                                {' '}(Detected default was <code>{autoOwner.uid}:{autoOwner.gid}</code> from <code>{autoOwner.path}</code>.)
+                                            </>
+                                        ) : (
+                                            <>
+                                                Files in this mount will appear owned by{' '}
+                                                <code>UID {autoOwner.uid} : GID {autoOwner.gid}</code>
+                                                {autoOwner.usedFallback && (
+                                                    <> &mdash; detected from existing ancestor <code>{autoOwner.path}</code></>
+                                                )}
+                                                {!autoOwner.usedFallback && (
+                                                    <> &mdash; detected from <code>{autoOwner.path}</code></>
+                                                )}
+                                                . That user will be able to read <em>and write</em> the mount from a host shell.{' '}
+                                                Override <code>UID</code> / <code>GID</code> in <em>Advanced Options</em> if needed.
+                                            </>
+                                        )}
+                                    </div>
+                                ) : (
+                                    <div style={{
+                                        fontSize: '12px',
+                                        backgroundColor: '#fff8e1',
+                                        border: '1px solid #ffe082',
+                                        borderRadius: '4px',
+                                        padding: '8px 10px',
+                                        color: '#856404',
+                                    }}>
+                                        <i className="fa fa-exclamation-triangle" style={{ marginRight: '6px' }} />
+                                        Could not auto-detect the host owner for <code>{mountPoint}</code> ({autoOwnerError}).
+                                        {' '}The mount will be owned by <strong>root</strong> unless you set <code>UID</code> / <code>GID</code> in <em>Advanced Options</em>.
+                                    </div>
+                                )}
+                            </Col>
+                        </FormGroup>
+                    )}
                     
                     {mountFs && <FormGroup row>
                         <Label for={"bandwidthLimit"} sm={3}><strong>Bandwidth Limit</strong></Label>

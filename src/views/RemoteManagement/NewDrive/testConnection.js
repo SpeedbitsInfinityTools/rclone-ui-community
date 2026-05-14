@@ -77,6 +77,26 @@ export async function testRemoteConnection() {
                         return;
                     }
                 }
+
+                // Hard-validate the shape of sas_url before sending it to rclone.
+                // This stops the wizard from reporting Connection/Read = "Success"
+                // on configurations that can never actually be used.
+                const finalSas = finalParameterValues.sas_url || '';
+                const hasAccountKey = !!(finalParameterValues.account && finalParameterValues.key);
+                if (finalSas && !hasAccountKey && typeof this.validateAzureSasUrl === 'function') {
+                    const v = this.validateAzureSasUrl(finalSas);
+                    if (!v.ok) {
+                        this.setState(prev => ({
+                            testingConnection: false,
+                            testResults: {...prev.testResults, connectionTest: false, error: `Azure SAS URL is invalid: ${v.error}`}
+                        }));
+                        toast.error(`Azure SAS URL is invalid: ${v.error}`, { autoClose: 12000 });
+                        return;
+                    }
+                    if (v.warnings.length > 0) {
+                        v.warnings.forEach(w => toast.warn(`Azure SAS: ${w}`, { autoClose: 12000 }));
+                    }
+                }
             }
 
             let data = {
@@ -191,9 +211,24 @@ export async function testRemoteConnection() {
                 new Promise((_, reject) => setTimeout(() => reject(new Error('Test timed out after 30 seconds')), 30000))
             ]);
 
-            // Now test the saved remote
-            // Test 1: Connection - list root (more reliable than about)
+            // Now test the saved remote.
+            //
+            // NOTE on test shape:
+            // Historically the wizard ran the same `operations/list` call twice and
+            // labelled the first one "Connection" and the second one "Read". That
+            // produced false positives for container-based backends (azureblob, s3,
+            // gcs, b2, azurefiles): listing the *account* root can succeed without
+            // any real auth (e.g. because a container has public-read enabled, or
+            // because Azure returns an empty container list for a malformed SAS),
+            // while actually listing *inside* a container fails with 401/403 once
+            // the user clicks into it from the Explorer.
+            //
+            // The Read test below now does something different from the Connection
+            // test for container-based backends: it descends one level into the
+            // first directory it found, which is what actually exercises the SAS.
+            //
             // Use "" not "/" — bucket-based backends (Azure, S3, etc.) return empty for "/"
+            const isContainerBased = ['azureblob', 'azurefiles', 's3', 'gcs', 'b2'].includes(drivePrefix);
             let rootItems = [];
             try {
                 const listResp = await testRequest(urls.getFilesList, {
@@ -212,19 +247,42 @@ export async function testRemoteConnection() {
                 }));
                 return;
             }
-            
-            // Test 2: Read - List files at root
+
+            // Test 2: Read
+            //  - container-based remote with at least one container visible:
+            //    list *inside* that container. This is the "real" auth check.
+            //  - everything else: list root again (cheap & non-destructive).
+            const firstDir = rootItems.find(item => item.IsDir);
             try {
-                await testRequest(urls.getFilesList, {
-                    fs: `${driveName}:`,
-                    remote: ""
-                });
+                if (isContainerBased && firstDir) {
+                    const containerPath = firstDir.Path || firstDir.Name;
+                    await testRequest(urls.getFilesList, {
+                        fs: `${driveName}:`,
+                        remote: containerPath
+                    });
+                } else {
+                    await testRequest(urls.getFilesList, {
+                        fs: `${driveName}:`,
+                        remote: ""
+                    });
+                }
                 this.setState(prev => ({
                     testResults: {...prev.testResults, readTest: true}
                 }));
             } catch (err) {
+                const detail = err.response?.data?.details?.error || err.response?.data?.error || err.message;
+                // Container-based + we just failed to descend = classic SAS / IAM scope error.
+                // Surface a more actionable message instead of the raw rclone string.
+                const friendly = (isContainerBased && firstDir)
+                    ? `Could not list inside '${firstDir.Path || firstDir.Name}'. ` +
+                      `This usually means the credentials authenticated at the account level ` +
+                      `(or anonymous public-read worked) but cannot authenticate operations inside ` +
+                      `containers. Common causes: SAS is scoped to a different container (sr=c), ` +
+                      `SAS has an IP restriction (sip=) that doesn't match this server's outbound IP, ` +
+                      `SAS is expired, or the container in the URL is missing. Details: ${detail}`
+                    : detail;
                 this.setState(prev => ({
-                    testResults: {...prev.testResults, readTest: false, error: err.response?.data?.details?.error || err.response?.data?.error || err.message}
+                    testResults: {...prev.testResults, readTest: false, error: friendly}
                 }));
                 return;
             }

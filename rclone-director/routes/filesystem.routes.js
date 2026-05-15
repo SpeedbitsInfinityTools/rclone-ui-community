@@ -61,6 +61,49 @@ function stripHostPrefix(p) {
 }
 
 /**
+ * Stat the first existing ancestor for a path.
+ * Optionally clamp traversal at `stopAt` (inclusive), so ENOENT on stopAt
+ * returns no-match instead of continuing to "/".
+ */
+async function statFirstExistingAncestor(startPath, options = {}) {
+    const stopAt = options.stopAt ? path.resolve(options.stopAt) : null;
+    let lookupPath = path.resolve(startPath);
+    let usedFallback = false;
+
+    for (let i = 0; i < 64; i++) {
+        try {
+            const st = await fs.stat(lookupPath);
+            return { path: lookupPath, st, usedFallback };
+        } catch (e) {
+            if (e.code === 'ENOENT') {
+                if (stopAt && lookupPath === stopAt) {
+                    break;
+                }
+                const parent = path.dirname(lookupPath);
+                if (parent === lookupPath) {
+                    break;
+                }
+                if (stopAt) {
+                    const inScope = parent === stopAt || parent.startsWith(`${stopAt}${path.sep}`);
+                    if (!inScope) {
+                        break;
+                    }
+                }
+                usedFallback = true;
+                lookupPath = parent;
+                continue;
+            }
+            if (e.code === 'EACCES') {
+                return { errorCode: 'EACCES' };
+            }
+            throw e;
+        }
+    }
+
+    return null;
+}
+
+/**
  * Load the default rclone server (rclone rcd running on the host) and decrypt
  * its password using the current request's admin password if necessary.
  * Returns { server, password } or null if no server is configured / decrypt fails.
@@ -219,44 +262,82 @@ router.get('/stat-owner', auth.requireAdminAuth, async (req, res) => {
             return res.status(400).json({ success: false, error: 'Invalid path' });
         }
 
-        let lookupPath = absolutePath;
-        let usedFallback = false;
+        const { isHostPath, hostPath } = stripHostPrefix(absolutePath);
+        const pathToCheck = isHostPath ? hostPath : absolutePath;
+        if (!isPathUnderAllowedRoots(pathToCheck)) {
+            return res.status(403).json({
+                success: false,
+                error: 'Path is outside allowed filesystem roots'
+            });
+        }
 
-        // Walk up to the first existing ancestor. Cap depth at 64 to avoid
-        // pathological loops on weird inputs.
-        for (let i = 0; i < 64; i++) {
-            try {
-                const st = await fs.stat(lookupPath);
+        // If caller passed "/foo/bar", prefer stat on "/host/foo/bar" so UID/GID
+        // reflects the *host* filesystem owner, not the container's local path.
+        // For explicit "/host/..." inputs, use the path as-is.
+        const hostViewPath = isHostPath
+            ? absolutePath
+            : (absolutePath === '/' ? '/host' : path.join('/host', absolutePath));
+
+        const hostStat = await statFirstExistingAncestor(hostViewPath, { stopAt: '/host' });
+        if (hostStat?.errorCode === 'EACCES') {
+            return res.status(403).json({ success: false, error: 'Permission denied while stat-ing host path' });
+        }
+        if (hostStat && hostStat.st) {
+            const resolvedHostPath = stripHostPrefix(hostStat.path).hostPath || '/';
+            return res.json({
+                success: true,
+                data: {
+                    path: hostStat.path,
+                    requestedPath: absolutePath,
+                    requestedHostPath: hostPath,
+                    resolvedHostPath,
+                    exists: resolvedHostPath === hostPath,
+                    usedFallback: hostStat.usedFallback,
+                    source: 'host-view',
+                    uid: hostStat.st.uid,
+                    gid: hostStat.st.gid,
+                    mode: hostStat.st.mode,
+                    modeOctal: (hostStat.st.mode & 0o7777).toString(8),
+                    isDirectory: hostStat.st.isDirectory(),
+                }
+            });
+        }
+
+        // Fall back to container-local stat only when caller did not explicitly
+        // ask for /host/... (helps non-docker/dev setups while keeping explicit
+        // host lookups strict).
+        if (!isHostPath) {
+            const localStat = await statFirstExistingAncestor(absolutePath);
+            if (localStat?.errorCode === 'EACCES') {
+                return res.status(403).json({ success: false, error: 'Permission denied while stat-ing path' });
+            }
+            if (localStat && localStat.st) {
                 return res.json({
                     success: true,
                     data: {
-                        path: lookupPath,
+                        path: localStat.path,
                         requestedPath: absolutePath,
-                        exists: lookupPath === absolutePath,
-                        usedFallback,
-                        uid: st.uid,
-                        gid: st.gid,
-                        mode: st.mode,
-                        modeOctal: (st.mode & 0o7777).toString(8),
-                        isDirectory: st.isDirectory(),
+                        requestedHostPath: hostPath,
+                        resolvedHostPath: localStat.path,
+                        exists: localStat.path === absolutePath,
+                        usedFallback: localStat.usedFallback,
+                        source: 'container-fs',
+                        uid: localStat.st.uid,
+                        gid: localStat.st.gid,
+                        mode: localStat.st.mode,
+                        modeOctal: (localStat.st.mode & 0o7777).toString(8),
+                        isDirectory: localStat.st.isDirectory(),
                     }
                 });
-            } catch (e) {
-                if (e.code === 'ENOENT') {
-                    usedFallback = true;
-                    const parent = path.dirname(lookupPath);
-                    if (parent === lookupPath) break; // hit "/"
-                    lookupPath = parent;
-                    continue;
-                }
-                if (e.code === 'EACCES') {
-                    return res.status(403).json({ success: false, error: 'Permission denied while stat-ing path' });
-                }
-                throw e;
             }
         }
 
-        return res.status(404).json({ success: false, error: 'No existing ancestor found' });
+        return res.status(404).json({
+            success: false,
+            error: isHostPath
+                ? 'Host path does not exist (or /host is not mounted in this container)'
+                : 'No existing ancestor found'
+        });
     } catch (error) {
         console.error('[FILESYSTEM] stat-owner failed:', error);
         res.status(500).json({ success: false, error: error.message });

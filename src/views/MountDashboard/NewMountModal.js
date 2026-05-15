@@ -27,6 +27,109 @@ import axiosInstance from "../../utils/API/API";
 import PathSelectorField from "./PathSelectorField";
 import ContainerSelector from "./ContainerSelector";
 
+// ---------------------------------------------------------------------------
+// Mount presets
+// ---------------------------------------------------------------------------
+// A preset is a one-shot template that fills the relevant rclone vfsOpt /
+// mountOpt fields (and optionally toggles `readOnly`) when the user picks it.
+// After being applied, the values land in `vfsOptionsValues` /
+// `mountOptionsValues` exactly as if the user had typed them in Advanced
+// Options, so they persist across reboots through the existing
+// `permanent: true` save path in the Director without any extra plumbing.
+//
+// Times are in nanoseconds (rclone's API unit). Sizes are bytes.
+const NS_PER_S = 1e9;
+const NS_PER_MIN = 60 * NS_PER_S;
+const NS_PER_HOUR = 3600 * NS_PER_S;
+const NS_PER_DAY = 24 * NS_PER_HOUR;
+
+const MOUNT_PRESETS = {
+    custom: {
+        label: 'Custom (no preset)',
+        short: 'Pick a use case to auto-fill performance flags, or configure everything yourself in Advanced Options.',
+        vfsOpt: {},
+        mountOpt: {},
+        // null = leave readOnly unchanged. true/false would force the checkbox.
+        readOnly: null,
+    },
+    nextcloud: {
+        label: 'Nextcloud / WebDAV / collaborative apps',
+        short: 'Required for chunked uploads, file locking, and the random-write patterns Nextcloud uses. Without "full" cache mode, S3-class backends silently drop bytes during chunked uploads.',
+        cacheWarning: true,
+        vfsOpt: {
+            CacheMode: 3,                       // full
+            DirCacheTime: 72 * NS_PER_HOUR,     // 72h
+            PollInterval: 0,                    // S3 has no notify; don't waste API calls
+            WriteBack: 5 * NS_PER_S,            // 5s
+        },
+        mountOpt: {},
+        readOnly: false,
+    },
+    media: {
+        label: 'Media streaming (Plex, Jellyfin, Kodi, Emby)',
+        short: 'Tuned for sequential read-ahead and parallel chunk streaming so playback doesn\'t stutter on large files.',
+        cacheWarning: true,
+        vfsOpt: {
+            CacheMode: 3,                       // full
+            DirCacheTime: 72 * NS_PER_HOUR,
+            ReadAhead: 134217728,               // 128 MiB
+            ChunkSize: 67108864,                // 64 MiB
+            ReadChunkStreams: 16,               // requires rclone >= 1.66
+        },
+        mountOpt: {},
+        readOnly: false,
+    },
+    backup: {
+        label: 'Backup target (rclone copy / restic / borg)',
+        short: 'Don\'t cache reads (backups read once, then discard). Short directory cache so deletions on the backend show up quickly.',
+        vfsOpt: {
+            CacheMode: 2,                       // writes
+            DirCacheTime: 10 * NS_PER_MIN,
+            PollInterval: 0,
+        },
+        mountOpt: {},
+        readOnly: false,
+    },
+    readonly: {
+        label: 'Read-only browse / archive',
+        short: 'View-only access. Sets the "Mount read-only" safeguard so nothing can be modified through this mount, plus minimal cache since nothing is written.',
+        vfsOpt: {
+            CacheMode: 1,                       // minimal
+            DirCacheTime: 72 * NS_PER_HOUR,
+        },
+        mountOpt: {},
+        readOnly: true,
+    },
+};
+
+const CACHE_MODE_OPTIONS = [
+    { value: 0, label: 'off — no caching (default; unsafe for write-heavy apps like Nextcloud)' },
+    { value: 1, label: 'minimal — metadata only' },
+    { value: 2, label: 'writes — buffer writes through local disk (good for backup tools)' },
+    { value: 3, label: 'full — buffer reads & writes through local disk (REQUIRED for Nextcloud)' },
+];
+
+// Convert nanoseconds → { value, unit } in the largest exact unit that fits.
+function nsToHumanDuration(ns) {
+    const v = Number(ns) || 0;
+    if (v <= 0) return { value: 0, unit: 's' };
+    if (v % NS_PER_DAY === 0) return { value: v / NS_PER_DAY, unit: 'd' };
+    if (v % NS_PER_HOUR === 0) return { value: v / NS_PER_HOUR, unit: 'h' };
+    if (v % NS_PER_MIN === 0) return { value: v / NS_PER_MIN, unit: 'm' };
+    return { value: Math.round(v / NS_PER_S), unit: 's' };
+}
+
+function humanDurationToNs(value, unit) {
+    const v = parseFloat(value);
+    if (!isFinite(v) || v <= 0) return 0;
+    switch (unit) {
+        case 'd': return Math.round(v * NS_PER_DAY);
+        case 'h': return Math.round(v * NS_PER_HOUR);
+        case 'm': return Math.round(v * NS_PER_MIN);
+        default: return Math.round(v * NS_PER_S);
+    }
+}
+
 const OptionFormInput = ({attr, changeHandler, currentValues, isValidMap, errorsMap}) => {
     const labelValue = `${attr.Name}`;
     const requiredValue = ((attr.Required) ? (<i className={"text-red"}>*</i>) : null);
@@ -135,6 +238,11 @@ const NewMountModal = (props) => {
     // Track whether the user has manually edited UID/GID — if so we no longer
     // overwrite their choice from auto-detect.
     const [uidGidUserEdited, setUidGidUserEdited] = useState(false);
+
+    // Use-case preset (see MOUNT_PRESETS at the top of this file).
+    // Selecting a preset is a one-shot action that fills the relevant
+    // vfsOpt / mountOpt fields and (optionally) toggles readOnly.
+    const [presetKey, setPresetKey] = useState('custom');
 
     // Bandwidth limiting
     const [bandwidthLimit, setBandwidthLimit] = useState(0); // 0 = unlimited
@@ -247,6 +355,23 @@ const NewMountModal = (props) => {
             setAutoOwner(null);
             setAutoOwnerError(null);
             setUidGidUserEdited(false);
+            setPresetKey('custom');
+        }
+    };
+
+    const applyPreset = (key) => {
+        setPresetKey(key);
+        const preset = MOUNT_PRESETS[key];
+        if (!preset) return;
+
+        if (Object.keys(preset.vfsOpt || {}).length > 0) {
+            setVfsOptionsValues((prev) => ({ ...prev, ...preset.vfsOpt }));
+        }
+        if (Object.keys(preset.mountOpt || {}).length > 0) {
+            setMountOptionsValues((prev) => ({ ...prev, ...preset.mountOpt }));
+        }
+        if (preset.readOnly !== null && preset.readOnly !== undefined) {
+            setReadOnly(preset.readOnly);
         }
     };
     
@@ -976,6 +1101,14 @@ const NewMountModal = (props) => {
                                                 Override <code>UID</code> / <code>GID</code> in <em>Advanced Options</em> if needed.
                                             </>
                                         )}
+                                        {autoOwner.source === 'container-fs' && (
+                                            <div style={{ marginTop: '6px', color: '#856404' }}>
+                                                <i className="fa fa-exclamation-triangle" style={{ marginRight: '4px' }} />
+                                                Owner was detected from the <strong>container filesystem</strong>, not host view.
+                                                {' '}In this environment, host ownership may differ. Verify from a host shell and set
+                                                {' '}<code>UID</code> / <code>GID</code> manually in <em>Advanced Options</em> if writes fail.
+                                            </div>
+                                        )}
                                     </div>
                                 ) : (
                                     <div style={{
@@ -995,6 +1128,128 @@ const NewMountModal = (props) => {
                         </FormGroup>
                     )}
                     
+                    {mountFs && (() => {
+                        const preset = MOUNT_PRESETS[presetKey] || MOUNT_PRESETS.custom;
+                        const cacheModeRaw = vfsOptionsValues.CacheMode;
+                        const currentCacheMode = (cacheModeRaw === undefined || cacheModeRaw === null || cacheModeRaw === '')
+                            ? 0
+                            : Number(cacheModeRaw);
+                        const dirCacheNs = Number(vfsOptionsValues.DirCacheTime) || 0;
+                        const dirCache = nsToHumanDuration(dirCacheNs);
+                        return (
+                            <>
+                                <hr style={{ margin: '20px 0 10px 0', borderTop: '1px dashed #ccc' }} />
+                                <div style={{ marginBottom: '6px', color: '#636f83', fontSize: '12px', textAlign: 'center', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                                    Performance &amp; Compatibility
+                                </div>
+
+                                <FormGroup row>
+                                    <Label for={"mountPreset"} sm={3}><strong>Use case</strong></Label>
+                                    <Col sm={9}>
+                                        <Input
+                                            type="select"
+                                            id="mountPreset"
+                                            name="mountPreset"
+                                            value={presetKey}
+                                            onChange={(e) => applyPreset(e.target.value)}
+                                        >
+                                            {Object.entries(MOUNT_PRESETS).map(([key, p]) => (
+                                                <option key={key} value={key}>{p.label}</option>
+                                            ))}
+                                        </Input>
+                                        <div style={{
+                                            marginTop: '6px',
+                                            padding: '8px 10px',
+                                            backgroundColor: presetKey === 'custom' ? '#f8f9fa' : '#e8f4fd',
+                                            border: `1px solid ${presetKey === 'custom' ? '#dee2e6' : '#bee5eb'}`,
+                                            borderRadius: '4px',
+                                            fontSize: '12px',
+                                            color: '#0c5460',
+                                        }}>
+                                            <i className="fa fa-info-circle" style={{ marginRight: '6px' }} />
+                                            {preset.short}
+                                            {preset.cacheWarning && (
+                                                <div style={{ marginTop: '6px', color: '#856404' }}>
+                                                    <i className="fa fa-exclamation-triangle" style={{ marginRight: '4px' }} />
+                                                    <strong>VFS cache uses host disk.</strong>{' '}
+                                                    Large transfers can fill the cache directory (installer default <code>/var/cache/rclone-ui</code>; legacy/default rclone fallback is <code>/root/.cache/rclone</code>). Make sure that volume has enough free space, or pass <code>--cache-dir /some/big/disk</code> to the rclone rcd <code>ExecStart=</code> in <code>/etc/systemd/system/rclone-ui-backend.service</code>.
+                                                </div>
+                                            )}
+                                        </div>
+                                        <small className="form-text text-muted" style={{ marginTop: '6px' }}>
+                                            Picking a preset fills the relevant flags below (Cache Mode, Directory Cache Time, etc.). You can still override anything in <em>Advanced Options</em>; these settings persist across reboots when <em>Permanent</em> is on.
+                                        </small>
+                                    </Col>
+                                </FormGroup>
+
+                                <FormGroup row>
+                                    <Label for={"cacheMode"} sm={3}><strong>Cache Mode</strong></Label>
+                                    <Col sm={9}>
+                                        <Input
+                                            type="select"
+                                            id="cacheMode"
+                                            name="cacheMode"
+                                            value={currentCacheMode}
+                                            onChange={(e) => {
+                                                const v = parseInt(e.target.value, 10);
+                                                setVfsOptionsValues((prev) => ({ ...prev, CacheMode: v }));
+                                            }}
+                                        >
+                                            {CACHE_MODE_OPTIONS.map(o => (
+                                                <option key={o.value} value={o.value}>{o.label}</option>
+                                            ))}
+                                        </Input>
+                                        <small className="form-text text-muted">
+                                            rclone <code>--vfs-cache-mode</code>. <strong>Use <code>full</code> for Nextcloud / WebDAV / databases</strong> — anything that does random writes or chunked uploads. Lower modes will silently lose data on those backends. <code>off</code> is fine only for read-mostly browse.
+                                        </small>
+                                    </Col>
+                                </FormGroup>
+
+                                <FormGroup row>
+                                    <Label for={"dirCacheTimeValue"} sm={3}><strong>Directory Cache Time</strong></Label>
+                                    <Col sm={9}>
+                                        <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+                                            <Input
+                                                type="number"
+                                                id="dirCacheTimeValue"
+                                                name="dirCacheTimeValue"
+                                                min="0"
+                                                step="1"
+                                                value={dirCache.value}
+                                                onChange={(e) => {
+                                                    const ns = humanDurationToNs(e.target.value, dirCache.unit);
+                                                    setVfsOptionsValues((prev) => ({ ...prev, DirCacheTime: ns }));
+                                                }}
+                                                style={{ flex: '1', maxWidth: '150px' }}
+                                                placeholder="0"
+                                            />
+                                            <Input
+                                                type="select"
+                                                value={dirCache.unit}
+                                                onChange={(e) => {
+                                                    const ns = humanDurationToNs(dirCache.value, e.target.value);
+                                                    setVfsOptionsValues((prev) => ({ ...prev, DirCacheTime: ns }));
+                                                }}
+                                                style={{ flex: '0 0 90px' }}
+                                            >
+                                                <option value="s">seconds</option>
+                                                <option value="m">minutes</option>
+                                                <option value="h">hours</option>
+                                                <option value="d">days</option>
+                                            </Input>
+                                            <span style={{ color: '#999', fontSize: '12px' }}>
+                                                ({dirCacheNs.toLocaleString()} ns)
+                                            </span>
+                                        </div>
+                                        <small className="form-text text-muted">
+                                            rclone <code>--dir-cache-time</code>. How long directory listings are cached before re-fetching. Bump this on S3-class backends (recommended <strong>72h</strong> for Nextcloud) — every miss is an API call (= money + latency). Default rclone is just 5 minutes.
+                                        </small>
+                                    </Col>
+                                </FormGroup>
+                            </>
+                        );
+                    })()}
+
                     {mountFs && <FormGroup row>
                         <Label for={"bandwidthLimit"} sm={3}><strong>Bandwidth Limit</strong></Label>
                         <Col sm={9}>

@@ -84,6 +84,11 @@ export const vfsOptions = {
         Default: 0,
         Help: ''
     },
+    "ReadChunkStreams": {
+        Type: 'int',
+        Default: 0,
+        Help: 'Number of parallel read streams per file (rclone --vfs-read-chunk-streams). 0 = sequential. Higher values (e.g. 16) significantly improve large-file streaming throughput. Requires rclone >= 1.66.'
+    },
     "ReadOnly": {
         Type: 'bool',
         Default: false,

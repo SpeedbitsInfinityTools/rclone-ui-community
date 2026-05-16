@@ -5,6 +5,9 @@
 
 const fs = require('fs').promises;
 const { SERVERS_FILE, MOUNTS_FILE, TEMPLATES_FILE } = require('../config/constants');
+const ENABLE_SERVER_CONFIG_VERBOSE_LOG =
+    process.env.DIRECTOR_SERVER_CONFIG_LOG === 'true' ||
+    process.env.RCLONE_DIRECTOR_SERVER_CONFIG_LOG === 'true';
 
 /**
  * Get default server configuration
@@ -88,7 +91,9 @@ async function loadServers() {
             return defaultConfig;
         }
         
-        console.log(`[SERVER] ✅ Loaded ${parsed.servers.length} server(s) from configuration`);
+        if (ENABLE_SERVER_CONFIG_VERBOSE_LOG) {
+            console.log(`[SERVER] ✅ Loaded ${parsed.servers.length} server(s) from configuration`);
+        }
         return parsed;
     } catch (error) {
         if (error.code === 'ENOENT') {

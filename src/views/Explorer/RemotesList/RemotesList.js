@@ -124,7 +124,6 @@ class RemotesList extends React.Component {
     render() {
         const {isEmpty, remoteName, checkingConnection, connectionFailed} = this.state;
         const {remotes, version} = this.props;
-        const {hasError} = this.props;
 
         // Check if remotes are loaded (indicates server connection)
         const remotesLoaded = remotes && Array.isArray(remotes) && remotes.length > 0;

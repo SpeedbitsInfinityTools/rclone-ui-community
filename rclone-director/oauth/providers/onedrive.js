@@ -361,6 +361,233 @@ class OneDriveProvider extends BaseProvider {
         };
         return endpoints[region] || endpoints['global'];
     }
+
+    /**
+     * Generic Graph GET with automatic 401 → refresh-token retry.
+     *
+     * Returns { data, newToken? } so the caller can persist a refreshed token
+     * back to rclone.conf via config/update if it wants to.
+     *
+     * `pathOrUrl` may be either:
+     *   - an absolute https URL starting with `https://graph.microsoft.*`
+     *     (used for `@odata.nextLink` pagination and the URL fallback)
+     *   - a path beginning with `/v1.0/...` which is appended to the
+     *     region-specific Graph endpoint.
+     *
+     * @private
+     */
+    async _graphGet(pathOrUrl, accessToken, refreshToken, options = {}) {
+        const region = options.region || 'global';
+        const graphEndpoint = this.getGraphEndpoint(region);
+        const url = pathOrUrl.startsWith('http')
+            ? pathOrUrl
+            : `${graphEndpoint}${pathOrUrl.startsWith('/') ? '' : '/'}${pathOrUrl}`;
+        const timeoutMs = options.timeoutMs || 10000;
+
+        const doGet = (token) => axios.get(url, {
+            headers: {
+                'Authorization': `Bearer ${token}`,
+                'Content-Type': 'application/json'
+            },
+            timeout: timeoutMs,
+            // Don't throw on 4xx so callers can introspect (404 / 403 are
+            // expected in some flows like resolve-site-url and search-sites).
+            validateStatus: (s) => s >= 200 && s < 500
+        });
+
+        let response = await doGet(accessToken);
+        let newToken = null;
+
+        if (response.status === 401 && refreshToken && options.clientId && options.clientSecret) {
+            console.log(`[OneDrive] _graphGet 401, refreshing token and retrying ${url}`);
+            try {
+                newToken = await this.refreshToken(refreshToken, options.clientId, options.clientSecret, region);
+                response = await doGet(newToken.access_token);
+            } catch (refreshError) {
+                console.error('[OneDrive] _graphGet refresh failed:', refreshError.message);
+                throw new Error(`Token refresh failed: ${refreshError.message}`);
+            }
+        }
+
+        if (response.status >= 400) {
+            const err = new Error(
+                response.data?.error?.message || `Microsoft Graph returned HTTP ${response.status}`
+            );
+            err.status = response.status;
+            err.code = response.data?.error?.code || `HTTP_${response.status}`;
+            err.graph = response.data?.error;
+            throw err;
+        }
+
+        return { data: response.data, newToken };
+    }
+
+    /**
+     * List the signed-in user's personal OneDrive(s).
+     * Returns up to N drives shaped for the picker UI.
+     *
+     * @param {string} accessToken
+     * @param {string|null} refreshToken
+     * @param {Object} options - { clientId, clientSecret, region }
+     * @returns {Promise<{ drives: Array, newToken?: Object }>}
+     */
+    async listPersonalDrives(accessToken, refreshToken = null, options = {}) {
+        const { data, newToken } = await this._graphGet(
+            '/v1.0/me/drives',
+            accessToken,
+            refreshToken,
+            options
+        );
+        const drives = (data?.value || []).map(d => ({
+            drive_id: d.id,
+            drive_type: d.driveType || 'personal',
+            name: d.name || 'OneDrive',
+            webUrl: d.webUrl || null,
+            owner: d.owner?.user?.displayName || d.owner?.user?.email || null
+        }));
+        return { drives, newToken };
+    }
+
+    /**
+     * Search SharePoint sites visible to the signed-in user.
+     *
+     * `query` defaults to `*` which asks Graph for "any site the caller can
+     * see". Tenants that haven't granted Sites.Read.All consent will return
+     * 403 — caller should fall back to the resolve-by-URL path and surface a
+     * helpful message.
+     *
+     * @param {string} accessToken
+     * @param {string|null} refreshToken
+     * @param {Object} options - { clientId, clientSecret, region }
+     * @param {string} query
+     * @returns {Promise<{ sites: Array, newToken?: Object, restricted?: boolean }>}
+     */
+    async searchSites(accessToken, refreshToken = null, options = {}, query = '*') {
+        const safeQuery = (typeof query === 'string' && query.trim()) ? query.trim() : '*';
+        const encoded = encodeURIComponent(safeQuery);
+        const path = `/v1.0/sites?search=${encoded}&$top=50`;
+
+        try {
+            const { data, newToken } = await this._graphGet(path, accessToken, refreshToken, options);
+            const sites = (data?.value || []).map(s => ({
+                site_id: s.id,
+                displayName: s.displayName || s.name || s.webUrl || '(unnamed site)',
+                name: s.name || null,
+                webUrl: s.webUrl || null,
+                description: s.description || null
+            }));
+            return { sites, newToken, restricted: false };
+        } catch (error) {
+            if (error.status === 403 || error.code === 'accessDenied' || error.code === 'Forbidden') {
+                console.log('[OneDrive] searchSites: access denied (no Sites.Read.All consent?) — caller should use resolve-by-URL fallback');
+                return { sites: [], newToken: null, restricted: true };
+            }
+            throw error;
+        }
+    }
+
+    /**
+     * Resolve a SharePoint site by its web URL (fallback when ?search=* is
+     * blocked by tenant policy). Accepts inputs like:
+     *
+     *   https://contoso.sharepoint.com/sites/Marketing
+     *   https://contoso.sharepoint.com/sites/Marketing/Shared%20Documents
+     *   contoso.sharepoint.com/sites/Marketing
+     *   /sites/Marketing            (assumes the user's default hostname — rejected)
+     *
+     * Throws on malformed input or 404.
+     */
+    async resolveSiteByUrl(accessToken, refreshToken = null, options = {}, rawUrl = '') {
+        if (typeof rawUrl !== 'string' || !rawUrl.trim()) {
+            throw Object.assign(new Error('A site URL is required'), { status: 400, code: 'badInput' });
+        }
+        let url = rawUrl.trim();
+        if (!/^https?:\/\//i.test(url)) {
+            url = `https://${url}`;
+        }
+        let parsed;
+        try {
+            parsed = new URL(url);
+        } catch (e) {
+            throw Object.assign(new Error(`Invalid URL: ${rawUrl}`), { status: 400, code: 'badInput' });
+        }
+        const hostname = parsed.hostname.toLowerCase();
+        if (!hostname.endsWith('.sharepoint.com') && !hostname.endsWith('.sharepoint.us') &&
+            !hostname.endsWith('.sharepoint.de') && !hostname.endsWith('.sharepoint.cn')) {
+            throw Object.assign(
+                new Error('URL must be a *.sharepoint.com (or regional) site URL'),
+                { status: 400, code: 'badInput' }
+            );
+        }
+        // Take the path up to (and including) /sites/<name> or /teams/<name>; strip query/hash and trailing parts.
+        const segments = parsed.pathname.split('/').filter(Boolean);
+        let sitePath = '';
+        const sitesIdx = segments.findIndex(s => s.toLowerCase() === 'sites' || s.toLowerCase() === 'teams');
+        if (sitesIdx >= 0 && segments[sitesIdx + 1]) {
+            sitePath = `/${segments[sitesIdx]}/${segments[sitesIdx + 1]}`;
+        } else if (segments.length === 0) {
+            // root site
+            sitePath = '';
+        } else {
+            // unknown URL shape — try whatever the user gave us
+            sitePath = `/${segments.join('/')}`;
+        }
+
+        // Microsoft Graph syntax for "look up site by URL":
+        //   GET /v1.0/sites/{hostname}:/{server-relative-path}
+        // For the root site (no path): GET /v1.0/sites/{hostname}
+        const graphPath = sitePath
+            ? `/v1.0/sites/${encodeURIComponent(hostname)}:${sitePath}`
+            : `/v1.0/sites/${encodeURIComponent(hostname)}`;
+
+        const { data, newToken } = await this._graphGet(graphPath, accessToken, refreshToken, options);
+        if (!data?.id) {
+            throw Object.assign(
+                new Error(`Could not resolve ${rawUrl} to a SharePoint site`),
+                { status: 404, code: 'itemNotFound' }
+            );
+        }
+        return {
+            site: {
+                site_id: data.id,
+                displayName: data.displayName || data.name || rawUrl,
+                name: data.name || null,
+                webUrl: data.webUrl || null,
+                description: data.description || null
+            },
+            newToken
+        };
+    }
+
+    /**
+     * List the document libraries (drives) of a SharePoint site.
+     *
+     * @param {string} accessToken
+     * @param {string|null} refreshToken
+     * @param {Object} options - { clientId, clientSecret, region }
+     * @param {string} siteId - Microsoft Graph site identifier (composite "host,guid,guid")
+     * @returns {Promise<{ drives: Array, newToken?: Object }>}
+     */
+    async listSiteDrives(accessToken, refreshToken = null, options = {}, siteId = '') {
+        if (typeof siteId !== 'string' || !siteId.trim()) {
+            throw Object.assign(new Error('site_id is required'), { status: 400, code: 'badInput' });
+        }
+        // siteId is the composite "host,guid,guid" string — Graph requires it
+        // verbatim (commas and all). encodeURIComponent would escape the commas
+        // and break the lookup, so we pass it through unchanged. The earlier
+        // input validation in routes/onedrive.routes.js limits the allowed
+        // character set so this is safe to interpolate.
+        const path = `/v1.0/sites/${siteId}/drives`;
+        const { data, newToken } = await this._graphGet(path, accessToken, refreshToken, options);
+        const drives = (data?.value || []).map(d => ({
+            drive_id: d.id,
+            drive_type: d.driveType || 'documentLibrary',
+            name: d.name || 'Documents',
+            webUrl: d.webUrl || null,
+            description: d.description || null
+        }));
+        return { drives, newToken };
+    }
 }
 
 module.exports = OneDriveProvider;

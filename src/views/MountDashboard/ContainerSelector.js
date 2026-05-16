@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
     Button,
     Spinner,
@@ -21,7 +21,7 @@ const ContainerSelector = ({ remoteName, mountPoint, readOnly, selected, onSelec
     const [error, setError] = useState(null);
     const [filter, setFilter] = useState('');
 
-    const loadContainers = async () => {
+    const loadContainers = useCallback(async () => {
         if (!remoteName) return;
         setLoading(true);
         setError(null);
@@ -45,13 +45,13 @@ const ContainerSelector = ({ remoteName, mountPoint, readOnly, selected, onSelec
         } finally {
             setLoading(false);
         }
-    };
+    }, [remoteName, onSelectionChange]);
 
     useEffect(() => {
         if (remoteName) {
             loadContainers();
         }
-    }, [remoteName]);
+    }, [remoteName, loadContainers]);
 
     const toggleSelect = (name) => {
         const next = new Set(selected);

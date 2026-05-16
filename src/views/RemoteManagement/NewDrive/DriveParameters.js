@@ -226,17 +226,31 @@ export function DriveParameters({drivePrefix, loadAdvanced, changeHandler, curre
                                                         </div>
                                                         <div style={{marginBottom: '10px', fontSize: '14px'}}>
                                                             <ol style={{marginLeft: '20px', marginBottom: '0'}}>
-                                                                <li>Download and install <a href="#" onClick={(e) => { e.preventDefault(); onOpenAuthHelper(); }} style={{color: '#0066cc', textDecoration: 'underline'}}>Rclone Auth Helper</a> on your local computer</li>
+                                                                <li>
+                                                                    Download and install{' '}
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={onOpenAuthHelper}
+                                                                        style={{color: '#0066cc', textDecoration: 'underline', background: 'none', border: 'none', padding: 0, cursor: 'pointer'}}
+                                                                    >
+                                                                        Rclone Auth Helper
+                                                                    </button>{' '}
+                                                                    on your local computer
+                                                                </li>
                                                                 <li>Start the application</li>
                                                                 <li>Click the "Authenticate" button below</li>
                                                                 <li>The helper app will catch the OAuth redirect and forward it to the server</li>
                                                             </ol>
                                                         </div>
                                                         <div style={{textAlign: 'center', marginTop: '15px'}}>
-                                                            <a href="#" onClick={(e) => { e.preventDefault(); onOpenAuthHelper(); }} style={{display: 'inline-block', marginBottom: '10px', color: '#0066cc', textDecoration: 'underline'}}>
+                                                            <button
+                                                                type="button"
+                                                                onClick={onOpenAuthHelper}
+                                                                style={{display: 'inline-block', marginBottom: '10px', color: '#0066cc', textDecoration: 'underline', background: 'none', border: 'none', padding: 0, cursor: 'pointer'}}
+                                                            >
                                                                 <i className="fa fa-download" style={{marginRight: '5px'}}></i>
                                                                 Download Rclone Auth Helper
-                                                            </a>
+                                                            </button>
                                                         </div>
                                                         <Button 
                                                             className="btn-blue"

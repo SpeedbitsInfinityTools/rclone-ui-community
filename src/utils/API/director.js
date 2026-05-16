@@ -463,6 +463,107 @@ export async function statOwner(targetPath) {
 }
 
 // ============================================================================
+// ONEDRIVE / SHAREPOINT DISCOVERY
+// ============================================================================
+
+/**
+ * Helper: unwrap Director error responses into a single readable Error so
+ * callers (which usually `toast.error(err.message)`) get something useful
+ * instead of "Request failed with status code 500".
+ */
+function _onedriveError(action, error) {
+    const body = error.response?.data;
+    const status = error.response?.status;
+    const detail = body?.error || body?.details || error.message || 'Unknown error';
+    const e = new Error(`${action} failed${status ? ` (HTTP ${status})` : ''}: ${detail}`);
+    e.status = status;
+    e.code = body?.code;
+    e.context = body?.context;
+    return e;
+}
+
+/**
+ * Discover where a OneDrive remote could connect to: personal drive + the
+ * SharePoint sites visible to the OAuth account. Used by the picker to
+ * populate its initial list.
+ */
+export async function discoverOneDriveLocations(remoteName) {
+    try {
+        const response = await directorAPI.post('/onedrive/discover-locations', {
+            remote_name: remoteName
+        }, { timeout: 25000 });
+        return response.data;
+    } catch (error) {
+        throw _onedriveError('Discover locations', error);
+    }
+}
+
+/**
+ * Search SharePoint sites by name (search-as-you-type).
+ */
+export async function searchOneDriveSites(remoteName, query) {
+    try {
+        const response = await directorAPI.post('/onedrive/search-sites', {
+            remote_name: remoteName,
+            query: query || '*'
+        }, { timeout: 15000 });
+        return response.data;
+    } catch (error) {
+        throw _onedriveError('Search sites', error);
+    }
+}
+
+/**
+ * Resolve a SharePoint site by URL. Used when the tenant doesn't allow
+ * Sites.Read.All search and the user pastes the URL manually.
+ */
+export async function resolveOneDriveSiteUrl(remoteName, url) {
+    try {
+        const response = await directorAPI.post('/onedrive/resolve-site-url', {
+            remote_name: remoteName,
+            url: url
+        }, { timeout: 15000 });
+        return response.data;
+    } catch (error) {
+        throw _onedriveError('Resolve site URL', error);
+    }
+}
+
+/**
+ * List document libraries (drives) inside a SharePoint site.
+ */
+export async function listOneDriveSiteDrives(remoteName, siteId) {
+    try {
+        const response = await directorAPI.post('/onedrive/list-site-drives', {
+            remote_name: remoteName,
+            site_id: siteId
+        }, { timeout: 15000 });
+        return response.data;
+    } catch (error) {
+        throw _onedriveError('List site drives', error);
+    }
+}
+
+/**
+ * Create a new OneDrive remote with the same OAuth token as `sourceRemote`
+ * but pointing at a different SharePoint drive. No re-authentication needed.
+ */
+export async function cloneOneDriveRemote(sourceRemote, newName, driveId, driveType, siteLabel) {
+    try {
+        const response = await directorAPI.post('/onedrive/clone-remote', {
+            source_remote: sourceRemote,
+            new_name: newName,
+            drive_id: driveId,
+            drive_type: driveType,
+            site_label: siteLabel
+        }, { timeout: 25000 });
+        return response.data;
+    } catch (error) {
+        throw _onedriveError('Clone remote', error);
+    }
+}
+
+// ============================================================================
 // HEALTH CHECK
 // ============================================================================
 

@@ -453,6 +453,16 @@ export async function loadRemoteConfig(remoteName) {
                 
                 // Check OAuth status and fetch account info if authenticated
                 await this.checkOAuthStatusAndAccountInfo(remoteName);
+
+                // For OneDrive remotes that just completed OAuth, kick off
+                // SharePoint location discovery in the background. If the user
+                // can see >=1 SharePoint sites the picker auto-opens so they
+                // can switch from the auto-picked personal drive to the
+                // SharePoint library they actually want. Personal-only
+                // accounts see no modal.
+                if (config.type === 'onedrive' && typeof this.triggerSharePointDiscovery === 'function') {
+                    this.triggerSharePointDiscovery({ autoOpen: true });
+                }
             }
         } catch (error) {
             console.error('Error loading remote config:', error);

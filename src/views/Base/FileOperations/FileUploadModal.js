@@ -31,7 +31,6 @@ import FileUploadBox from "./FileUploadBox";
 const FileUploadModal = (props) => {
     const {
         currentPath,
-        containerID,
         onUploadComplete
     } = props;
 

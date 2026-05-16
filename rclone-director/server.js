@@ -230,19 +230,25 @@ const proxyRoutes = require('./routes/proxy.routes');
 const healthRoutes = require('./routes/health.routes');
 const filesystemRoutes = require('./routes/filesystem.routes');
 const notificationsRoutes = require('./routes/notifications.routes');
+const onedriveRoutes = require('./routes/onedrive.routes');
 const healthMonitor = require('./services/health-monitor.service');
 
 // Wire health monitor into notification routes
 notificationsRoutes.setHealthMonitor(healthMonitor);
 
 const app = express();
+const ENABLE_HTTP_ACCESS_LOG =
+    process.env.DIRECTOR_HTTP_LOG === 'true' ||
+    process.env.RCLONE_DIRECTOR_HTTP_LOG === 'true';
 
 // ============================================================================
 // MIDDLEWARE
 // ============================================================================
 
 app.use(cors());
-app.use(morgan('combined'));
+if (ENABLE_HTTP_ACCESS_LOG) {
+    app.use(morgan('combined'));
+}
 
 // URL-encoded parser (for OAuth POST callbacks and form submissions)
 app.use(express.urlencoded({ extended: false }));
@@ -297,6 +303,14 @@ app.use('/director/notifications', notificationsRoutes);
 // Filesystem browser
 app.use('/director/filesystem', filesystemRoutes);
 
+// OneDrive / SharePoint discovery
+// Dual-mounted for the same reason as oauthRoutes above: the bundled nginx
+// rewrites /api/director/* to /director/*, but direct-to-Director deployments
+// expose /api/director/* publicly without the rewrite. Mounting both keeps
+// frontend code path-agnostic.
+app.use('/director/onedrive', onedriveRoutes);
+app.use('/api/director/onedrive', onedriveRoutes);
+
 // Rclone API Proxy (must come last - catch-all)
 app.use('/rclone', proxyRoutes);
 
@@ -320,6 +334,7 @@ app.use((req, res) => {
             '/director/mounts/*',
             '/director/notifications/*',
             '/director/filesystem/*',
+            '/director/onedrive/*',
             '/rclone/*'
         ]
     });

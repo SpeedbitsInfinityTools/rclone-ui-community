@@ -19,7 +19,6 @@ import {changePath, changeSortFilter, navigateUp} from "../../../actions/explore
 import LinkShareModal from "../../Base/LinkShareModal/LinkShareModal";
 import FileInfoModal from "./FileInfoModal";
 import ScrollableDiv from "../../Base/ScrollableDiv/ScrollableDiv";
-import {FILES_VIEW_HEIGHT} from "../../../utils/Constants";
 import {PROP_CURRENT_PATH, PROP_FS_INFO} from "../../../utils/RclonePropTypes";
 import * as PropTypes from 'prop-types';
 import ErrorBoundary from "../../../ErrorHandling/ErrorBoundary";
@@ -283,7 +282,7 @@ class FilesView extends React.PureComponent {
 
     confirmBulkDelete = async () => {
         const { selectedFiles } = this.state;
-        const { files, currentPath, containerID } = this.props;
+        const { files, currentPath } = this.props;
         const { remoteName, remotePath } = currentPath;
 
         this.setState({ isBulkDeleting: true });

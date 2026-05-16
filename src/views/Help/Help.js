@@ -61,8 +61,6 @@ class Help extends React.Component {
     }
 
     render() {
-        const { detectedSystem } = this.state;
-        
         // Highlight style for matching platform
         const highlightStyle = {
             backgroundColor: '#e7f3ff',

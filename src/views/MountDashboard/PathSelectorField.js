@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Input, InputGroup, InputGroupText, Button } from 'reactstrap';
+import { Input, InputGroup, Button } from 'reactstrap';
 import FileExplorerModal from './FileExplorerModal';
 
 const PathSelectorField = ({

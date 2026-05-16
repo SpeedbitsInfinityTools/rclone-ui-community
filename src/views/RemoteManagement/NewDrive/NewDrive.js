@@ -12,11 +12,12 @@ import {connect} from "react-redux";
 import ErrorBoundary from "../../../ErrorHandling/ErrorBoundary";
 import urls from "../../../utils/API/endpoint";
 import {withRouter} from "../../../utils/withRouter";
-import {checkOAuthStatus, testLocalAppConnection as testLocalAppConnectionAPI} from "../../../utils/API/director";
+import {checkOAuthStatus, testLocalAppConnection as testLocalAppConnectionAPI, discoverOneDriveLocations} from "../../../utils/API/director";
 import {DriveParameters, CustomInput} from "./DriveParameters";
 import * as oauthHandlers from "./oauthHandlers";
 import * as formHandlers from "./formHandlers";
 import * as testConnectionHandlers from "./testConnection";
+import SharePointLocationPicker from "../SharePointPicker/SharePointLocationPicker";
 
 
 /**
@@ -115,7 +116,25 @@ class NewDrive extends React.Component {
       detectedSystem: detectSystem(),
       
       // Testing RcloneAuthHelper connection
-      testingAuthHelper: false
+      testingAuthHelper: false,
+
+      // SharePoint location picker (OneDrive only).
+      // - sharePointDiscovery: raw response from /onedrive/discover-locations.
+      //   Cached so the modal opens instantly the second time without re-fetching.
+      // - sharePointDiscoveryLoading / Error: status of that background call.
+      // - showSharePointPicker: modal visibility.
+      // - sharePointPickerAutoShown: one-shot guard so we only auto-open the
+      //   picker once per OAuth completion (closing it shouldn't make it pop
+      //   back open on every re-render). The manual button always re-opens it.
+      // - sharePointLocationLabel: human-readable label of the currently
+      //   selected location (e.g. "OneDrive – Profilbilder" or
+      //   "SIM-Privacy » Documents"). Used in the status row in step 2.
+      sharePointDiscovery: null,
+      sharePointDiscoveryLoading: false,
+      sharePointDiscoveryError: null,
+      showSharePointPicker: false,
+      sharePointPickerAutoShown: false,
+      sharePointLocationLabel: null
 
         };
         this.configCheckInterval = null;
@@ -317,6 +336,20 @@ class NewDrive extends React.Component {
                         setTimeout(async () => {
                             // Use the remote name and type from loaded config
                             await this.checkOAuthStatusAndAccountInfo(remoteName, loadedConfig.type);
+
+                            // Edit mode for OneDrive: pre-load discovery so the
+                            // status row can show "Connected to: <current>" and
+                            // the manual button works without a fetch latency
+                            // on first click. We deliberately set
+                            // sharePointPickerAutoShown=true here so editing an
+                            // existing remote doesn't surprise users with a
+                            // modal — they explicitly chose this location at
+                            // creation time.
+                            if (loadedConfig.type === 'onedrive' && this._isMounted) {
+                                this.setState({ sharePointPickerAutoShown: true }, () => {
+                                    this.triggerSharePointDiscovery({ autoOpen: false });
+                                });
+                            }
                         }, 500);
                     });
                 }
@@ -391,6 +424,124 @@ class NewDrive extends React.Component {
         // Remove /#/hash if present
         const baseUrl = `${protocol}//${hostname}${port ? ':' + port : ''}`;
         return baseUrl;
+    };
+
+    /**
+     * Build a human-readable "Connected to..." label from a discovery response
+     * and the currently-selected drive_id / drive_type in formValues.
+     */
+    _computeSharePointLabel = (discovery, formValues) => {
+        if (!discovery) return null;
+        const driveId = formValues?.drive_id;
+        if (!driveId) return null;
+        const personal = (discovery.personal?.drives || []).find(d => d.drive_id === driveId);
+        if (personal) return `OneDrive – ${personal.name || 'Personal'}`;
+        // We may not have the matching SharePoint drive name without a second
+        // round-trip; if we do (because the user picked it in this session),
+        // it'll be stamped into state by handleSharePointConfirm directly.
+        return 'SharePoint document library';
+    };
+
+    /**
+     * Trigger SharePoint location discovery for the currently-loaded OneDrive
+     * remote. Caches the result on the component so the picker opens instantly
+     * the second time.
+     *
+     * @param {Object} options
+     * @param {boolean} options.autoOpen - If true and the account can see >=1
+     *   SharePoint sites, automatically open the picker modal. Guarded by
+     *   `sharePointPickerAutoShown` so it only happens once per OAuth session.
+     */
+    triggerSharePointDiscovery = async ({ autoOpen = false } = {}) => {
+        if (!this._isMounted) return;
+        const { drivePrefix, driveName } = this.state;
+        if (drivePrefix !== 'onedrive' || !driveName) return;
+        // Avoid concurrent in-flight calls.
+        if (this.state.sharePointDiscoveryLoading) return;
+
+        this.setState({ sharePointDiscoveryLoading: true, sharePointDiscoveryError: null });
+        try {
+            const result = await discoverOneDriveLocations(driveName);
+            if (!this._isMounted) return;
+            this.setState(prev => {
+                const next = {
+                    sharePointDiscoveryLoading: false,
+                    sharePointDiscoveryError: null,
+                    sharePointDiscovery: result,
+                    sharePointLocationLabel:
+                        prev.sharePointLocationLabel ||
+                        this._computeSharePointLabel(result, prev.formValues)
+                };
+                if (autoOpen && !prev.sharePointPickerAutoShown && Array.isArray(result?.sites) && result.sites.length >= 1) {
+                    next.showSharePointPicker = true;
+                    next.sharePointPickerAutoShown = true;
+                }
+                return next;
+            });
+        } catch (e) {
+            if (!this._isMounted) return;
+            console.warn('[NewDrive] SharePoint discovery failed:', e.message);
+            // Non-fatal: silently leave the manual button enabled so the user
+            // can still try to open the picker themselves (and see the same
+            // error inside the modal, where it has more room to breathe).
+            this.setState({ sharePointDiscoveryLoading: false, sharePointDiscoveryError: e.message || 'Failed' });
+        }
+    };
+
+    openSharePointPicker = () => {
+        // Manual open: trigger a fresh discovery if we have no cached result,
+        // otherwise reuse the cache (the picker itself re-discovers on mount
+        // anyway, so this is just so the discovery error — if any — clears).
+        this.setState({ showSharePointPicker: true });
+    };
+
+    closeSharePointPicker = () => {
+        this.setState({ showSharePointPicker: false });
+    };
+
+    /**
+     * Called by the picker when the user confirms a selection (in-form mode).
+     * Writes drive_id / drive_type into formValues so the wizard's normal
+     * submit path picks them up via config/create or config/update.
+     */
+    handleSharePointConfirm = (selection) => {
+        if (!selection?.drive) {
+            this.setState({ showSharePointPicker: false });
+            return;
+        }
+        const driveId = selection.drive.drive_id;
+        const driveType = selection.drive.drive_type;
+        const label = selection.kind === 'site'
+            ? `${selection.site?.displayName || 'SharePoint'} » ${selection.drive.name}`
+            : `OneDrive – ${selection.drive.name || 'Personal'}`;
+
+        this.setState(prev => {
+            const newFormValues = {
+                ...prev.formValues,
+                drive_id: driveId,
+                drive_type: driveType
+            };
+            // Re-run validation so the wizard's Next button reflects the new
+            // form state. validateFormValues lives on the prototype via the
+            // formHandlers mixin.
+            let validation = { isValid: prev.formValuesValid, errors: prev.formErrors };
+            if (typeof this.validateFormValues === 'function') {
+                try {
+                    validation = this.validateFormValues(newFormValues, prev.optionTypes, prev.required);
+                } catch (e) {
+                    console.warn('[NewDrive] validateFormValues threw after SharePoint pick:', e.message);
+                }
+            }
+            return {
+                formValues: newFormValues,
+                isValid: validation.isValid,
+                formErrors: validation.errors,
+                formValuesValid: validation.isValid,
+                sharePointLocationLabel: label,
+                showSharePointPicker: false
+            };
+        });
+        toast.success(`Connected to: ${label}`, { autoClose: 4000 });
     };
 
 
@@ -655,13 +806,73 @@ class NewDrive extends React.Component {
                                 {oauthIsLocalMachine === true ? (
                                     <span> Since you're using the browser on the same computer where Rclone runs, no additional setup is needed.</span>
                                 ) : oauthIsLocalMachine === false ? (
-                                    <span> Since you're accessing from a remote computer, you need either to authenticate using the text fields (Client ID and Client Secret) or install the <strong><a href="#" onClick={(e) => { e.preventDefault(); this.toggleAuthHelperModal(); }} style={{color: '#0066cc', textDecoration: 'underline'}}>Rclone Auth Helper App</a></strong> on your local machine to catch the OAuth redirect.</span>
+                                    <span>
+                                        {' '}Since you're accessing from a remote computer, you need either to authenticate using the text fields (Client ID and Client Secret) or install the{' '}
+                                        <strong>
+                                            <button
+                                                type="button"
+                                                onClick={this.toggleAuthHelperModal}
+                                                style={{color: '#0066cc', textDecoration: 'underline', background: 'none', border: 'none', padding: 0, cursor: 'pointer', fontWeight: 'bold'}}
+                                            >
+                                                Rclone Auth Helper App
+                                            </button>
+                                        </strong>{' '}
+                                        on your local machine to catch the OAuth redirect.
+                                    </span>
                                 ) : (
                                     <span> You can authenticate using the button above or manually enter your Client ID and Client Secret in the text fields below.</span>
                                 )}
                             </div>
                         )}
                         
+                        {/* SharePoint / OneDrive location status row */}
+                        {drivePrefix === 'onedrive' && currentStepNumber === 2 && this.state.oauthAuthenticated && (
+                            <div style={{
+                                marginBottom: '20px',
+                                padding: '12px 15px',
+                                backgroundColor: '#f8f9fa',
+                                border: '1px solid #dee2e6',
+                                borderRadius: '4px',
+                                fontSize: '13px',
+                                display: 'flex',
+                                alignItems: 'center',
+                                flexWrap: 'wrap',
+                                gap: '8px'
+                            }}>
+                                <i className="fa fa-cloud" style={{color: '#0a82be'}}></i>
+                                <span><strong>Connected to:</strong>{' '}
+                                    {this.state.sharePointLocationLabel || (
+                                        this.state.sharePointDiscoveryLoading
+                                            ? <em style={{color: '#777'}}>discovering locations...</em>
+                                            : (this.state.formValues.drive_type
+                                                ? (this.state.formValues.drive_type === 'documentLibrary'
+                                                    ? 'SharePoint document library'
+                                                    : this.state.formValues.drive_type === 'business'
+                                                        ? 'OneDrive for Business'
+                                                        : 'Personal OneDrive')
+                                                : <em style={{color: '#777'}}>auto-detected</em>)
+                                    )}
+                                </span>
+                                <Button
+                                    color="link"
+                                    size="sm"
+                                    style={{padding: '0', marginLeft: 'auto'}}
+                                    onClick={this.openSharePointPicker}
+                                    disabled={this.state.sharePointDiscoveryLoading}
+                                >
+                                    {this.state.sharePointDiscoveryLoading
+                                        ? <><i className="fa fa-spinner fa-spin"/> Loading...</>
+                                        : <>Choose different location...</>}
+                                </Button>
+                                {this.state.sharePointDiscoveryError && (
+                                    <div style={{flexBasis: '100%', color: '#856404', fontSize: '12px', marginTop: '4px'}}>
+                                        <i className="fa fa-exclamation-triangle"/>{' '}
+                                        Could not load locations: {this.state.sharePointDiscoveryError}. Click "Choose different location..." to retry.
+                                    </div>
+                                )}
+                            </div>
+                        )}
+
                         {/* SSH Port Forwarding Info for localhost connections */}
                         {isOAuthRemote && currentStepNumber === 2 && oauthIsLocalMachine === true && (
                             <div style={{
@@ -1253,6 +1464,17 @@ class NewDrive extends React.Component {
                         </ModalFooter>
                     </Modal>
                     
+                    {/* SharePoint / OneDrive Location Picker */}
+                    {drivePrefix === 'onedrive' && driveName && (
+                        <SharePointLocationPicker
+                            isOpen={this.state.showSharePointPicker}
+                            sourceRemote={driveName}
+                            mode="in-form"
+                            onConfirm={this.handleSharePointConfirm}
+                            onCancel={this.closeSharePointPicker}
+                        />
+                    )}
+
                     {/* Cancel Confirmation Modal */}
                     <ConfirmModal
                         isOpen={this.state.showCancelModal}
@@ -1330,11 +1552,12 @@ class NewDrive extends React.Component {
                                 </p>
                                 <ol style={{marginBottom: '15px', paddingLeft: '20px'}}>
                                     <li style={{marginBottom: '8px'}}>
-                                        <a href="#" 
-                                           onClick={(e) => { e.preventDefault(); this.toggleOAuthPortModal(); this.toggleAuthHelperModal(); }}
-                                           style={{color: '#0066cc', fontWeight: 'bold'}}>
+                                        <button
+                                           type="button"
+                                           onClick={() => { this.toggleOAuthPortModal(); this.toggleAuthHelperModal(); }}
+                                           style={{color: '#0066cc', fontWeight: 'bold', textDecoration: 'underline', background: 'none', border: 'none', padding: 0, cursor: 'pointer'}}>
                                             Download Rclone Auth Helper
-                                        </a>
+                                        </button>
                                         <span style={{color: '#666', marginLeft: '8px'}}>
                                             (Windows, macOS, or Linux)
                                         </span>

@@ -226,7 +226,7 @@ export function validateDriveName(name) {
     // Allow: letters, numbers, spaces, underscores, hyphens, dots, plus signs, at signs
     // This matches Rclone's actual requirements while avoiding shell issues
     // Note: \s matches whitespace (including spaces)
-    const regex = /^[0-9A-Za-z_\-\.\+\@\s]+$/;
+    const regex = /^[0-9A-Za-z_.+@\-\s]+$/;
     return baseValidator(regex, name);
 }
 

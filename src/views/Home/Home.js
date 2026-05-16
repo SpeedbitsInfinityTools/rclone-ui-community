@@ -7,7 +7,6 @@ import {connect} from "react-redux";
 import * as PropTypes from 'prop-types';
 import {exportSettings, importSettings} from "../../utils/API/director";
 import {toast} from "react-toastify";
-import {SESSION_KEY} from "../../utils/Constants";
 
 /**
  * Check if the current URL is a local/private network address

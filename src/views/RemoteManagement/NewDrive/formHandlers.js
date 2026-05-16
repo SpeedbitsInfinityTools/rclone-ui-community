@@ -610,6 +610,70 @@ export async function handleSubmit(e) {
 
           try {
             const {drivePrefix: editingPrefix} = this.props.match.params;
+            const isRenaming =
+                !!(editingPrefix && this.state.originalDriveName && this.state.originalDriveName !== this.state.driveName);
+            const configNameToCheckForEdit = editingPrefix
+                ? (isRenaming ? this.state.originalDriveName : this.state.driveName)
+                : null;
+            let existingConfigForEdit = null;
+
+            // In edit mode, preserve existing secret fields (passwords/keys/etc.)
+            // when the user leaves them blank in the form. rclone `config/get`
+            // often doesn't prefill secret values in the UI, so without this,
+            // saving an edit can unintentionally wipe credentials.
+            if (editingPrefix && configNameToCheckForEdit) {
+              try {
+                const existingConfigCheck = await axiosInstance.post(urls.getConfigForRemote, {name: configNameToCheckForEdit});
+                existingConfigForEdit = existingConfigCheck.data || {};
+                const existingParams = (existingConfigForEdit.parameters && Object.keys(existingConfigForEdit.parameters).length > 0)
+                    ? existingConfigForEdit.parameters
+                    : existingConfigForEdit;
+
+                defaults.forEach((opt) => {
+                  if (!opt || !opt.Name || !opt.IsPassword) return;
+                  const currentValue = formValues[opt.Name];
+                  const isBlank = currentValue === undefined || currentValue === null || currentValue === "";
+                  if (isBlank && existingParams[opt.Name] !== undefined && existingParams[opt.Name] !== null && existingParams[opt.Name] !== "") {
+                    finalParameterValues[opt.Name] = existingParams[opt.Name];
+                  }
+                });
+
+                data.parameters = finalParameterValues;
+              } catch (preserveErr) {
+                console.warn('[Edit] Could not load existing config for secret preservation:', preserveErr.message);
+              }
+            }
+
+            // Post-save sanity check for OneDrive: verify that the remote really
+            // points to the selected drive_id/drive_type and surface a toast.
+            const verifyOneDriveSelectionAfterSave = async () => {
+              if (this.state.drivePrefix !== 'onedrive') return;
+              const targetDriveId = data?.parameters?.drive_id;
+              if (!targetDriveId) return;
+              try {
+                const verifyConfig = await axiosInstance.post(urls.getConfigForRemote, {name: this.state.driveName});
+                const saved = verifyConfig.data || {};
+                const savedDriveId = saved.drive_id || (saved.parameters && saved.parameters.drive_id);
+                const savedDriveType = saved.drive_type || (saved.parameters && saved.parameters.drive_type);
+                const targetDriveType = data?.parameters?.drive_type;
+                const idMatch = savedDriveId === targetDriveId;
+                const typeMatch = !targetDriveType || savedDriveType === targetDriveType;
+                if (idMatch && typeMatch) {
+                  const shortDriveId = String(savedDriveId || "").substring(0, 12);
+                  toast.success(
+                      `Verified remote target: ${savedDriveType || 'documentLibrary'} (${shortDriveId}...)`,
+                      { autoClose: 5000 }
+                  );
+                } else {
+                  toast.warn(
+                      'Saved, but the remote still points to a different drive. Reopen the picker and save again.',
+                      { autoClose: 10000 }
+                  );
+                }
+              } catch (verifyErr) {
+                console.warn('[OneDrive] Post-save verification failed:', verifyErr.message);
+              }
+            };
 
             // If encryption is requested, create an underlying base remote and then a crypt remote with the chosen name
             if (this.state.addEncryption) {
@@ -697,10 +761,52 @@ export async function handleSubmit(e) {
                         const verifyConfig = await axiosInstance.post(urls.getConfigForRemote, {name: this.state.driveName});
                         if (verifyConfig.data && !isEmpty(verifyConfig.data)) {
                             console.log('[OAuth] Config verified after async create');
-                            return; // Config exists, success
+
+                            // IMPORTANT: In the OAuth flow, the remote may already exist
+                            // (created by the OAuth callback handler) before the wizard
+                            // reaches Save. In that case, createConfig can fail/timeout
+                            // and the old auto-picked drive_id/drive_type would remain.
+                            // Force an update here so user-selected SharePoint library
+                            // (drive_id/drive_type) is actually persisted.
+                            const existingDriveId = verifyConfig.data?.drive_id ||
+                                (verifyConfig.data?.parameters && verifyConfig.data?.parameters.drive_id);
+                            const existingDriveType = verifyConfig.data?.drive_type ||
+                                (verifyConfig.data?.parameters && verifyConfig.data?.parameters.drive_type);
+                            const targetDriveId = data?.parameters?.drive_id;
+                            const targetDriveType = data?.parameters?.drive_type;
+                            const needsDriveUpdate = !!(
+                                targetDriveId &&
+                                ((existingDriveId !== targetDriveId) || (targetDriveType && existingDriveType !== targetDriveType))
+                            );
+
+                            if (needsDriveUpdate) {
+                                console.log('[OAuth] Existing config uses a different drive. Forcing config/update...');
+                                try {
+                                    await Promise.race([
+                                        axiosInstance.post(urls.updateConfig, data),
+                                        new Promise((_, reject) => setTimeout(() => reject(new Error('Config update timeout after 10 seconds')), 10000))
+                                    ]);
+                                    console.log('[OAuth] Config updated with selected drive_id/drive_type');
+                                } catch (updateErr) {
+                                    console.warn('[OAuth] config/update failed after create timeout. Falling back to delete+create...', updateErr.message);
+                                    // Last resort: recreate with desired parameters.
+                                    try {
+                                        await axiosInstance.post(urls.deleteConfig, {name: this.state.driveName});
+                                    } catch (_) {
+                                        // ignore delete errors; create below will still try
+                                    }
+                                    await Promise.race([
+                                        axiosInstance.post(urls.createConfig, data),
+                                        new Promise((_, reject) => setTimeout(() => reject(new Error('Config recreate timeout after 10 seconds')), 10000))
+                                    ]);
+                                    console.log('[OAuth] Config recreated with selected drive_id/drive_type');
+                                }
+                            }
+                            return; // Config exists (and now updated if needed)
                         }
                         throw err; // Re-throw if config doesn't exist
                     });
+                    await verifyOneDriveSelectionAfterSave();
                     this.stopAuthentication();
                     this.setState({
                         saving: false,
@@ -720,9 +826,6 @@ export async function handleSubmit(e) {
                     });
                   }
                 } else {
-                  // Check if remote is being renamed
-                  const isRenaming = this.state.originalDriveName && this.state.originalDriveName !== this.state.driveName;
-                  
                   if (isRenaming) {
                     // When renaming, we need to get config from the ORIGINAL name, not the new name
                     console.log(`[Rename] Renaming remote from "${this.state.originalDriveName}" to "${this.state.driveName}"`);
@@ -732,10 +835,18 @@ export async function handleSubmit(e) {
                     // OAuth remotes: preserve token when updating
                     // Extract token from existing config before deleting
                     // Use originalDriveName if renaming, otherwise use current driveName
-                    const configNameToCheck = isRenaming ? this.state.originalDriveName : this.state.driveName;
-                    const existingConfigCheck = await axiosInstance.post(urls.getConfigForRemote, {name: configNameToCheck});
-                    const existingToken = existingConfigCheck.data?.token || 
-                                        (existingConfigCheck.data?.parameters && existingConfigCheck.data?.parameters.token);
+                    let tokenSource = existingConfigForEdit || {};
+                    let existingToken = tokenSource?.token || 
+                                        (tokenSource?.parameters && tokenSource?.parameters.token);
+                    if (!existingToken && configNameToCheckForEdit) {
+                      try {
+                        const existingConfigCheck = await axiosInstance.post(urls.getConfigForRemote, {name: configNameToCheckForEdit});
+                        tokenSource = existingConfigCheck.data || {};
+                        existingToken = tokenSource?.token || (tokenSource?.parameters && tokenSource?.parameters.token);
+                      } catch (tokenLoadErr) {
+                        console.warn('[OAuth] Could not load existing token before update:', tokenLoadErr.message);
+                      }
+                    }
                     
                     if (existingToken && existingToken.length > 0) {
                       // Preserve the token in the new config
@@ -778,6 +889,7 @@ export async function handleSubmit(e) {
                         }
                         throw err; // Re-throw if config doesn't exist
                     });
+                    await verifyOneDriveSelectionAfterSave();
                     this.stopAuthentication();
                     this.setState({
                         saving: false,

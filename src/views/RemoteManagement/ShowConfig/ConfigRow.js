@@ -8,6 +8,7 @@ import urls from "../../../utils/API/endpoint";
 import {createTemplate, checkOAuthStatus, getOAuthAccountInfo} from "../../../utils/API/director";
 import {isEmpty} from "../../../utils/Tools";
 import ConfirmModal from "../../../components/ConfirmModal";
+import SharePointLocationPicker from "../SharePointPicker/SharePointLocationPicker";
 
 
 class ConfigRow extends React.Component {
@@ -27,7 +28,9 @@ class ConfigRow extends React.Component {
             authStatusError: null,
             accountInfo: null, // { email, name, provider } or null
             storageInfo: null, // { total, used, free } or 'loading' or 'error' or 'not_supported'
-            storageError: null
+            storageError: null,
+            // SharePoint clone picker (OneDrive-only "Add SharePoint library..." action).
+            showSharePointPicker: false
         };
         this.onDeleteClicked = this.onDeleteClicked.bind(this);
         this.onUpdateClicked = this.onUpdateClicked.bind(this);
@@ -40,6 +43,30 @@ class ConfigRow extends React.Component {
         this.handleConfirmDelete = this.handleConfirmDelete.bind(this);
         this.checkAuthStatus = this.checkAuthStatus.bind(this);
         this.fetchStorageInfo = this.fetchStorageInfo.bind(this);
+        this.openSharePointPicker = this.openSharePointPicker.bind(this);
+        this.closeSharePointPicker = this.closeSharePointPicker.bind(this);
+        this.handleSharePointCloneConfirm = this.handleSharePointCloneConfirm.bind(this);
+    }
+
+    openSharePointPicker() {
+        this.setState({ showSharePointPicker: true });
+    }
+
+    closeSharePointPicker() {
+        this.setState({ showSharePointPicker: false });
+    }
+
+    /**
+     * Called by the SharePoint picker in clone mode after it has already
+     * successfully created the new remote on the backend. The picker shows
+     * its own toast; we just close the modal and refresh the parent so the
+     * new remote appears in the table.
+     */
+    handleSharePointCloneConfirm(_selection) {
+        this.setState({ showSharePointPicker: false });
+        if (typeof this.props.refreshHandle === 'function') {
+            this.props.refreshHandle();
+        }
     }
 
     componentDidMount() {
@@ -588,8 +615,13 @@ class ConfigRow extends React.Component {
     render() {
         const {name, type} = this.state.remote;
         const {sequenceNumber, disabled} = this.props;
-        const {isCreatingTemplate, showTemplateModal, templateName, templateDescription, showDeleteModal, isDeleting} = this.state;
-        
+        const {isCreatingTemplate, showTemplateModal, templateName, templateDescription, showDeleteModal, isDeleting, authStatus} = this.state;
+        const isOneDrive = type === 'onedrive';
+        // Only offer "Add SharePoint library" once we've confirmed the remote
+        // is authenticated — otherwise the picker has no token to use and the
+        // backend would return 404.
+        const canAddSharePoint = isOneDrive && authStatus === 'authenticated' && !disabled;
+
         return (
             <>
                 <tr data-test="configRowComponent">
@@ -611,6 +643,20 @@ class ConfigRow extends React.Component {
                         <Button className={"bg-info mr-2"} onClick={this.onUpdateClicked} disabled={disabled}>
                             {disabled ? <><i className="fa fa-ban"></i> Edit</> : <>Edit</>}
                         </Button>
+                        {isOneDrive && (
+                            <Button
+                                color="primary"
+                                className={"mr-2"}
+                                onClick={this.openSharePointPicker}
+                                disabled={!canAddSharePoint}
+                                title={
+                                    !canAddSharePoint
+                                        ? (disabled ? 'Server disconnected' : 'Authenticate this remote first')
+                                        : 'Create another rclone remote pointing at a different SharePoint library, sharing this remote\'s OAuth token (no re-authentication needed)'
+                                }>
+                                <i className="fa fa-sitemap"></i> Add SharePoint library...
+                            </Button>
+                        )}
                         <Button 
                             color="success" 
                             className={"mr-2"} 
@@ -630,6 +676,17 @@ class ConfigRow extends React.Component {
                         </Button>
                     </td>
                 </tr>
+
+                {/* SharePoint clone picker — only mounted for OneDrive remotes */}
+                {isOneDrive && (
+                    <SharePointLocationPicker
+                        isOpen={this.state.showSharePointPicker}
+                        sourceRemote={name}
+                        mode="clone"
+                        onConfirm={this.handleSharePointCloneConfirm}
+                        onCancel={this.closeSharePointPicker}
+                    />
+                )}
 
                 {/* Delete Confirmation Modal */}
                 <ConfirmModal

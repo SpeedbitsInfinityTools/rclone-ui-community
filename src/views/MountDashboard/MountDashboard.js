@@ -138,7 +138,6 @@ class MountDashboard extends React.Component {
 		// Use Redux version state as primary connection indicator
 		const reduxConnected = version && (version.version || version.decomposed) && !version.hasError;
 		const mountsLoaded = currentMounts && Array.isArray(currentMounts);
-		const hasMounts = mountsLoaded && currentMounts.length > 0;
 		const isConnected = reduxConnected || mountsLoaded;
 		
 		// Disable actions if not connected

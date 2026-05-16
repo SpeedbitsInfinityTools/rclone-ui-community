@@ -422,7 +422,7 @@ class RcloneServers extends Component {
     };
 
     render() {
-        const { servers, defaultServerId, loading, modal, editMode, currentServer, testingServer, deletingServer, restartingServer, restartCountdown, serverStatuses, serverErrors, testingInModal, modalTestResult, modalTestMessage, errorModalOpen, errorModalMessage, showConfigHelp, directorConnected, directorError, edition, maxServers } = this.state;
+        const { servers, defaultServerId, loading, modal, editMode, currentServer, testingServer, deletingServer, restartingServer, restartCountdown, serverStatuses, serverErrors, testingInModal, modalTestResult, modalTestMessage, errorModalOpen, errorModalMessage, showConfigHelp, directorConnected, directorError, edition } = this.state;
         
         const isCommunity = edition === 'community';
         

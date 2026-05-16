@@ -10,6 +10,9 @@ const FormData = require('form-data');
 const auth = require('../auth');
 const { loadServers } = require('../services/data.service');
 const { axiosInstance } = require('../services/server.service');
+const ENABLE_PROXY_REQUEST_LOG =
+    process.env.DIRECTOR_PROXY_LOG === 'true' ||
+    process.env.RCLONE_DIRECTOR_PROXY_LOG === 'true';
 
 // Multer for file uploads (store in memory for proxy forwarding)
 const upload = multer({ 
@@ -179,7 +182,9 @@ router.all('/*', auth.requireAdminAuth, upload.any(), async (req, res) => {
             }
         }
         
-        console.log(`[PROXY] ${req.method} ${rclonePath} → ${server.url}`);
+        if (ENABLE_PROXY_REQUEST_LOG) {
+            console.log(`[PROXY] ${req.method} ${rclonePath} → ${server.url}`);
+        }
         
         // Check if this is a OneDrive operation that might need drive_id/drive_type
         // Extract remote name from request body if available
@@ -283,7 +288,9 @@ router.all('/*', auth.requireAdminAuth, upload.any(), async (req, res) => {
         
         if (isFileUpload) {
             // Handle file upload with multipart/form-data
-            console.log(`[PROXY] File upload detected: ${req.files.length} file(s)`);
+            if (ENABLE_PROXY_REQUEST_LOG) {
+                console.log(`[PROXY] File upload detected: ${req.files.length} file(s)`);
+            }
             
             const formData = new FormData();
             

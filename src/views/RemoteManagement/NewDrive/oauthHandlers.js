@@ -104,7 +104,13 @@ export async function handleOAuthAuthenticate() {
                 }));
             }
             
-            // If we got a callback_token, try to send it to local RcloneAuthApp
+            // If we got a callback_token, send it to the local RcloneAuthApp.
+            //
+            // For LOCAL users this is best-effort (the Director's own callback server
+            // on port 53682 will catch the redirect). For REMOTE users this is the
+            // ONLY way the OAuth callback can reach the Director, so a failure here
+            // must abort the flow — otherwise the popup opens and the user gets a
+            // confusing "RcloneAuthApp is not configured" page after authenticating.
             if (oauthResponse.callback_token) {
                 try {
                     const serverUrl = this.getServerUrl();
@@ -112,8 +118,25 @@ export async function handleOAuthAuthenticate() {
                     await sendTokenToLocalApp(oauthResponse.callback_token, serverUrl);
                     console.log('[OAuth] Successfully sent token to RcloneAuthApp');
                 } catch (error) {
-                    console.warn('[OAuth] Could not send token to RcloneAuthApp (app may not be running):', error.message);
-                    // Continue with OAuth flow anyway - the app might not be needed if user is on same machine
+                    console.warn('[OAuth] sendTokenToLocalApp failed:', error.message);
+
+                    if (oauthIsLocalMachine === false) {
+                        // Remote user: helper app is required. Abort and explain.
+                        toast.error(
+                            `Cannot configure RcloneAuthApp: ${error.message} ` +
+                            `OAuth aborted — fix the helper app and try again.`,
+                            { autoClose: 12000 }
+                        );
+                        this.setState({
+                            oauthAuthenticating: false,
+                            oauthPollInterval: null,
+                            oauthAuthUrl: null,
+                            oauthAttempts: 0,
+                            oauthStatusMessages: []
+                        });
+                        return;
+                    }
+                    // Local user: keep going — Director's own :53682 listener will catch it.
                 }
             }
             

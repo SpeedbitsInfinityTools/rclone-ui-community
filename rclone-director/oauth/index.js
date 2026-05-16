@@ -247,12 +247,15 @@ async function handleAuthorize(req, res, getServerById, getDefaultServer, axiosI
         const state = utils.generateState();
         console.log(`[OAUTH] Generated state for ${type}: ${state.substring(0, 20)}... (length: ${state.length})`);
         
-        // Build redirect URI (public callback endpoint)
+        // Build redirect URI (public callback endpoint).
+        // Use the /api/director/* path so this works when nginx is in front of Director
+        // (nginx routes /api/director/* to upstream /director/*). The Director also mounts
+        // its OAuth router at /api/director/oauth as a safety net for direct deployments.
         const host = req.get('host');
         if (!host) {
             return res.status(400).json({ error: 'Missing Host header' });
         }
-        const redirectUri = `${req.protocol}://${host}/director/oauth/callback`;
+        const redirectUri = `${req.protocol}://${host}/api/director/oauth/callback`;
         
         // Get client credentials (allow override from parameters)
         // Normalize empty strings to null
@@ -580,7 +583,7 @@ async function handleCallback(req, res, getServerById, getDefaultServer, axiosIn
                     </html>
                 `);
             }
-            redirectUri = `${req.protocol}://${host}/director/oauth/callback`;
+            redirectUri = `${req.protocol}://${host}/api/director/oauth/callback`;
         }
         
         console.log(`[OAUTH] Using redirect_uri: ${redirectUri}`);

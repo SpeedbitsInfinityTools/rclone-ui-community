@@ -315,8 +315,9 @@ export async function startOAuthFlow(name, type, parameters, serverId = null) {
  * @returns {Promise<Object>} Response from local app
  */
 export async function sendTokenToLocalApp(callbackToken, serverUrl) {
+    let response;
     try {
-        const response = await fetch('http://localhost:53682/api/token', {
+        response = await fetch('http://localhost:53682/api/token', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
@@ -326,16 +327,35 @@ export async function sendTokenToLocalApp(callbackToken, serverUrl) {
                 server_url: serverUrl
             })
         });
-        
-        if (!response.ok) {
-            throw new Error(`Local app responded with status ${response.status}`);
-        }
-        
-        return await response.json();
-    } catch (error) {
-        // App not running or connection failed
-        throw error;
+    } catch (networkError) {
+        // Network-level failure: app not running, blocked by mixed-content/PNA,
+        // CORS preflight failed, etc.
+        const err = new Error(
+            `Could not reach RcloneAuthApp at http://localhost:53682 (${networkError.message}). ` +
+            `Is the helper app running? On HTTPS pages the browser may also block ` +
+            `requests to http://localhost — see the browser console for details.`
+        );
+        err.cause = networkError;
+        err.kind = 'network';
+        throw err;
     }
+
+    if (!response.ok) {
+        // Try to surface the actual error body so the user knows why it was rejected.
+        let detail = '';
+        try {
+            const body = await response.json();
+            detail = body?.error ? ` ${body.error}` : '';
+        } catch (_) { /* body wasn't JSON */ }
+        const err = new Error(
+            `RcloneAuthApp rejected the configuration request (HTTP ${response.status}).${detail}`
+        );
+        err.kind = 'rejected';
+        err.status = response.status;
+        throw err;
+    }
+
+    return await response.json();
 }
 
 /**

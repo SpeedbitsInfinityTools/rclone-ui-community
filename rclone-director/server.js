@@ -276,7 +276,16 @@ app.use('/director/templates', templatesRoutes);
 app.use('/director/backup', backupRoutes);
 
 // OAuth
+// Mounted at BOTH paths:
+//   /director/oauth       — internal/legacy path used by the bundled nginx
+//                           (location /api/director/ → proxy_pass /director/), so nginx
+//                           rewrites the incoming /api/director/oauth/* down to /director/oauth/*.
+//   /api/director/oauth   — public path used by the OAuth provider redirect_uri and by the
+//                           RcloneAuthApp helper when forwarding callbacks. Mounting it here
+//                           too means direct-to-Director deployments (no proxy in front) work
+//                           with the same helper without per-deployment configuration.
 app.use('/director/oauth', oauthRoutes);
+app.use('/api/director/oauth', oauthRoutes);
 
 // Mounts
 app.use('/director/mount', mountsRoutes);

@@ -182,11 +182,12 @@ router.post('/authorize', auth.requireAdminAuth, async (req, res) => {
             if (authUrl) {
                 console.log(`[OAUTH] Auth URL received for ${name} (headless mode)`);
                 
-                // Replace redirect_uri with our public callback endpoint ONLY if Rclone includes it
-                // In headless mode, Rclone may use urn:ietf:wg:oauth:2.0:oob or similar
-                // Only rewrite if redirect_uri parameter exists
-                // NOTE: Route is /director/oauth/callback (not /api/director/oauth/callback)
-                const publicCallbackUrl = `${req.protocol}://${req.get('host')}/director/oauth/callback`;
+                // Replace redirect_uri with our public callback endpoint ONLY if Rclone includes it.
+                // In headless mode, Rclone may use urn:ietf:wg:oauth:2.0:oob or similar.
+                // Use the /api/director/* path so the URL works behind nginx (which routes
+                // /api/director/* → upstream /director/*). Director also mounts its OAuth router
+                // at /api/director/oauth as a safety net for direct-Node deployments.
+                const publicCallbackUrl = `${req.protocol}://${req.get('host')}/api/director/oauth/callback`;
                 
                 let urlObj = null;
                 let stateParam = null;

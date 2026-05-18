@@ -2,6 +2,27 @@ import React from 'react';
 import {Button, Col, FormFeedback, FormGroup, Input, InputGroup, InputGroupText, Label} from "reactstrap";
 import {findFromConfig, isEmpty, supportsOAuth} from "../../../utils/Tools";
 
+// UI-level "treat-as-password" overrides for fields rclone does NOT mark as
+// IsPassword but which are still sensitive credentials. These get rendered as
+// type=password with the existing eye-toggle in the form.
+const UI_SECRET_FIELDS_BY_PROVIDER = {
+    s3: new Set([
+        'secret_access_key',
+        'session_token',
+        'sse_customer_key',
+        'sse_customer_key_base64',
+        'sse_customer_key_md5',
+        'sse_kms_key_id'
+    ])
+};
+
+function isUiSecretField(drivePrefix, attr) {
+    if (!attr) return false;
+    if (attr.IsPassword) return true;
+    const set = UI_SECRET_FIELDS_BY_PROVIDER[drivePrefix];
+    return !!(set && set.has(attr.Name));
+}
+
 /**
  * Returns a component with set of input, error for the drivePrefix.
  * The input type changes based on config.Options.Type parameter. see code for details.
@@ -87,7 +108,9 @@ export function DriveParameters({drivePrefix, loadAdvanced, changeHandler, curre
 
                     let inputType = "";
 
-                    if (attr.IsPassword) {
+                    const renderAsPassword = isUiSecretField(drivePrefix, attr);
+
+                    if (renderAsPassword) {
                         inputType = visiblePasswords[attr.Name] ? "text" : "password";
                     } else if (hasExamples) {
                         if (attr.Name === "endpoint" && selectedProvider === "Other") {
@@ -376,16 +399,17 @@ export function DriveParameters({drivePrefix, loadAdvanced, changeHandler, curre
                             <FormGroup row>
                                 <Label for={attr.Name} sm={5}>{labelValue}{requiredValue}</Label>
                                 <Col sm={7}>
-                                    {attr.IsPassword ? (
+                                    {renderAsPassword ? (
                                         <InputGroup>
                                             <Input type={inputType} value={currentValues[attr.Name]}
                                                    name={attr.Name} valid={isValidMap[attr.Name]} invalid={!isValidMap[attr.Name]}
                                                    id={attr.Name} onChange={changeHandler} required={attr.Required}
-                                                   placeholder={placeholder}/>
-                                            <InputGroupText 
+                                                   placeholder={placeholder}
+                                                   autoComplete="new-password"/>
+                                            <InputGroupText
                                                 style={{cursor: 'pointer', backgroundColor: '#f8f9fa'}}
                                                 onClick={() => togglePasswordVisibility(attr.Name)}
-                                                title={visiblePasswords[attr.Name] ? "Hide password" : "Show password"}>
+                                                title={visiblePasswords[attr.Name] ? "Hide" : "Show"}>
                                                 <i className={visiblePasswords[attr.Name] ? "fa fa-eye-slash" : "fa fa-eye"}></i>
                                             </InputGroupText>
                                         </InputGroup>

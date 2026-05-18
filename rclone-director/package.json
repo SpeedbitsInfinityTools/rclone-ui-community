@@ -1,6 +1,6 @@
 {
   "name": "rclone-director",
-  "version": "1.0.19",
+  "version": "1.0.20",
   "description": "Smart proxy layer for managing multiple rclone backends",
   "main": "server.js",
   "scripts": {

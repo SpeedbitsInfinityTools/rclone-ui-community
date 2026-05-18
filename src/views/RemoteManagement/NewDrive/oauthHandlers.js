@@ -4,6 +4,23 @@ import {toast} from "react-toastify";
 import urls from "../../../utils/API/endpoint";
 import {startOAuthFlow, checkOAuthStatus, getOAuthAccountInfo, revokeOAuth, sendTokenToLocalApp} from "../../../utils/API/director";
 
+// Minimum RcloneAuthApp version that has the validator fix allowing RFC1918
+// (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16) Director URLs. Below this, the
+// helper rejects any LAN/VPN Director with the misleading error
+// "Invalid server URL. Only http/https URLs are allowed." Bumping this constant
+// when we ship future validator-affecting fixes keeps stale installs visible.
+const MIN_HELPER_VERSION = "1.0.11";
+
+function compareSemver(a, b) {
+    const pa = String(a || "0").split(".").map(n => parseInt(n, 10) || 0);
+    const pb = String(b || "0").split(".").map(n => parseInt(n, 10) || 0);
+    for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+        const d = (pa[i] || 0) - (pb[i] || 0);
+        if (d !== 0) return d < 0 ? -1 : 1;
+    }
+    return 0;
+}
+
 export async function handleOAuthAuthenticate() {
         const {driveName, drivePrefix, formValues, oauthPollInterval, oauthAuthenticating, oauthIsLocalMachine} = this.state;
         
@@ -48,6 +65,20 @@ export async function handleOAuthAuthenticate() {
                 return; // Don't proceed with OAuth
             }
             
+            // Stale helper installs (pre-1.0.11) reject LAN/VPN Director URLs
+            // with a misleading "Only http/https URLs are allowed" error.
+            // Warn the user upfront so they don't waste an OAuth round-trip.
+            const { helperVersion, helperOutdated } = this.state;
+            if (helperOutdated) {
+                toast.warning(
+                    `Your Rclone Auth Helper is outdated ` +
+                    `(installed: ${helperVersion || 'pre-1.0.11'}, required: ${MIN_HELPER_VERSION}+). ` +
+                    `OAuth against a remote Director may fail. ` +
+                    `Please update from the GitHub releases page and restart the helper.`,
+                    { autoClose: 12000 }
+                );
+            }
+
             console.log('[OAuth] RcloneAuthApp is running - proceeding with OAuth');
         } else if (oauthIsLocalMachine === true) {
             console.log('[OAuth] Local user - proceeding directly (port will be opened by rclone)');
@@ -514,29 +545,49 @@ export async function detectOAuthEnvironment() {
      */
 export async function checkOAuthPortReady() {
         console.log('[OAuth] Checking if port 53682 is accessible...');
-        
+
         try {
-            // Try to ping RcloneAuthApp's test endpoint
             const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 2000); // 2 second timeout
-            
+            const timeoutId = setTimeout(() => controller.abort(), 2000);
+
             const response = await fetch('http://localhost:53682/api/test', {
                 method: 'GET',
                 signal: controller.signal,
                 mode: 'cors'
             });
-            
+
             clearTimeout(timeoutId);
-            
-            if (response.ok) {
-                console.log('[OAuth] Port 53682 is accessible - RcloneAuthApp is running');
-                return true;
-            } else {
+
+            if (!response.ok) {
                 console.log('[OAuth] Port 53682 responded but with error:', response.status);
                 return false;
             }
+
+            // Sniff the helper version so we can warn upfront on stale installs.
+            // Older helpers (< 1.0.11) didn't expose `version` and have the
+            // broken RFC1918 validator. We treat "no version field" the same
+            // as "outdated" so those users get the upgrade prompt too.
+            let helperVersion = null;
+            try {
+                const body = await response.json();
+                helperVersion = body?.version || null;
+            } catch (_) { /* old helpers may not have JSON-friendly bodies */ }
+
+            const outdated = !helperVersion || compareSemver(helperVersion, MIN_HELPER_VERSION) < 0;
+            if (this && typeof this.setState === 'function') {
+                this.setState({
+                    helperVersion: helperVersion,
+                    helperOutdated: outdated
+                });
+            }
+
+            console.log(
+                '[OAuth] Port 53682 is accessible - RcloneAuthApp version:',
+                helperVersion || 'unknown',
+                outdated ? `(OUTDATED, min ${MIN_HELPER_VERSION})` : '(OK)'
+            );
+            return true;
         } catch (error) {
-            // Network error means nothing is listening on the port
             console.log('[OAuth] Port 53682 is not accessible:', error.message);
             return false;
         }

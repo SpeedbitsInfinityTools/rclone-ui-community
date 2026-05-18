@@ -232,6 +232,7 @@ const filesystemRoutes = require('./routes/filesystem.routes');
 const notificationsRoutes = require('./routes/notifications.routes');
 const onedriveRoutes = require('./routes/onedrive.routes');
 const healthMonitor = require('./services/health-monitor.service');
+const mountRestore = require('./services/mount-restore.service');
 
 // Wire health monitor into notification routes
 notificationsRoutes.setHealthMonitor(healthMonitor);
@@ -368,6 +369,18 @@ app.listen(PORT, () => {
     healthMonitor.initialize().catch(err => {
         console.error('[SERVER] Health monitor initialization failed:', err.message);
     });
+
+    // Initialize the mount auto-restore service. This re-creates persistent
+    // FUSE mounts after any rclone-rcd restart (container update, host package
+    // upgrade, OOM kill, manual `systemctl restart rclone-ui-backend`,
+    // installer re-run, full reboot). Idempotent + per-mount backoff.
+    // Disable with DISABLE_MOUNT_AUTORESTORE=1 if running a custom mount
+    // management scheme (e.g. per-mount systemd units).
+    try {
+        mountRestore.initialize();
+    } catch (err) {
+        console.error('[SERVER] Mount auto-restore initialization failed:', err.message);
+    }
 });
 
 // ============================================================================
@@ -435,11 +448,13 @@ process.on('unhandledRejection', (reason, promise) => {
 process.on('SIGTERM', () => {
     console.log('\n[SERVER] SIGTERM received, shutting down gracefully...');
     healthMonitor.stop();
+    mountRestore.stop();
     process.exit(0);
 });
 
 process.on('SIGINT', () => {
     console.log('\n[SERVER] SIGINT received, shutting down gracefully...');
     healthMonitor.stop();
+    mountRestore.stop();
     process.exit(0);
 });

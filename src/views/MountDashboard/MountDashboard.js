@@ -117,7 +117,21 @@ class MountDashboard extends React.Component {
 
 	handleRemoveMount = (item) => {
 		const {unmount} = this.props;
-		unmount(item.MountPoint);
+		const mountPoint = item && item.MountPoint;
+		if (!mountPoint) return;
+
+		const confirmed = window.confirm(
+			`Unmount "${mountPoint}" now?\n\n` +
+			`Tip: After confirming, you'll choose whether to keep the mount definition for auto-restore.`
+		);
+		if (!confirmed) return;
+
+		const removePersistent = window.confirm(
+			`Remove this mount from persistence too?\n\n` +
+			`OK = Unmount and forget it\n` +
+			`Cancel = Unmount only (keep disabled definition for later restore)`
+		);
+		unmount(mountPoint, !removePersistent);
 	}
 
 	handleCreateNewMount = (mountFs, mountPoint, vfsOptions, mountOptions) => {

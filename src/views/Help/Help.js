@@ -544,10 +544,10 @@ class Help extends React.Component {
                                                 <i className="fa fa-windows"></i> <strong>For Windows:</strong>
                                             </h6>
                                             <ol style={{fontSize: '14px', marginBottom: '20px'}}>
-                                                <li>Download <code>RcloneAuthApp-Windows.zip</code> from the remote setup wizard (Step 2)</li>
-                                                <li>Extract the ZIP file to a folder (e.g., <code>C:\RcloneAuth\</code>)</li>
-                                                <li>Double-click <code>RcloneAuthApp.exe</code> to run it</li>
-                                                <li>A small window appears showing "Listening on http://localhost:53682"</li>
+                                                <li>Download the installer from the remote setup wizard (Step 2) — pick <code>Rclone.Auth.Helper.Setup-x64.exe</code> for Intel/AMD or <code>Rclone.Auth.Helper.Setup-arm64.exe</code> for ARM</li>
+                                                <li>Run the installer and follow the prompts (a portable EXE and unpacked ZIP are also available)</li>
+                                                <li>Launch <strong>Rclone Auth Helper</strong> from the Start Menu</li>
+                                                <li>The window shows "Listening on http://localhost:53682"</li>
                                                 <li>Keep this app running during OAuth authentication</li>
                                             </ol>
 
@@ -555,10 +555,9 @@ class Help extends React.Component {
                                                 <i className="fa fa-apple"></i> <strong>For macOS:</strong>
                                             </h6>
                                             <ol style={{fontSize: '14px', marginBottom: '20px'}}>
-                                                <li>Download <code>RcloneAuthApp-macOS.zip</code> from the remote setup wizard (Step 2)</li>
-                                                <li>Extract the ZIP file</li>
-                                                <li>Double-click <code>RcloneAuthApp</code> to run it</li>
-                                                <li>If macOS blocks it, go to System Preferences → Security & Privacy → Click "Open Anyway"</li>
+                                                <li>Download <code>Rclone.Auth.Helper-universal.dmg</code> from the remote setup wizard (Step 2)</li>
+                                                <li>Open the DMG and drag <strong>Rclone Auth Helper</strong> to Applications</li>
+                                                <li>Launch from Applications. On first run macOS may block it — open System Settings → Privacy &amp; Security and click "Open Anyway"</li>
                                                 <li>Keep this app running during OAuth authentication</li>
                                             </ol>
 
@@ -566,11 +565,11 @@ class Help extends React.Component {
                                                 <i className="fa fa-linux"></i> <strong>For Linux:</strong>
                                             </h6>
                                             <ol style={{fontSize: '14px', marginBottom: '0'}}>
-                                                <li>Download <code>RcloneAuthApp-Linux.zip</code> from the remote setup wizard (Step 2)</li>
-                                                <li>Extract the ZIP file</li>
-                                                <li>Open terminal and navigate to the extracted folder</li>
-                                                <li>Run: <code>chmod +x RcloneAuthApp && ./RcloneAuthApp</code></li>
-                                                <li>Keep the terminal open during OAuth authentication</li>
+                                                <li>Download the tarball from the remote setup wizard (Step 2) — <code>RcloneAuthApp-Linux-x64.tar.gz</code> or <code>RcloneAuthApp-Linux-ARM64.tar.gz</code> (AppImages are also available)</li>
+                                                <li>Extract: <code>tar -xzf RcloneAuthApp-Linux-*.tar.gz</code></li>
+                                                <li>Open a terminal in the extracted folder</li>
+                                                <li>Run: <code>./rclone-auth-helper</code> (or double-click in your file manager)</li>
+                                                <li>Keep the terminal/window open during OAuth authentication</li>
                                             </ol>
                                         </div>
 
@@ -588,31 +587,67 @@ class Help extends React.Component {
                                                 </tr>
                                             </thead>
                                             <tbody>
-                                                <tr style={(this.isMatchingPlatform('windows-x64') || this.isMatchingPlatform('windows-arm64')) ? highlightStyle : {}}>
+                                                {(() => {
+                                                    // Single source of truth — point at the PUBLIC mirror
+                                                    // repo so the source repo can stay private but the
+                                                    // installers are still downloadable by anyone.
+                                                    const RELEASES_BASE = 'https://github.com/SpeedbitsInfinityTools/rclone-auth-helper/releases/latest/download';
+                                                    return (<>
+                                                <tr style={this.isMatchingPlatform('windows-x64') ? highlightStyle : {}}>
                                                     <td>
                                                         <i className="fa fa-windows" style={{marginRight: '8px', color: '#0078d4'}}></i>
-                                                        Windows Installer (x64 & ARM64)
+                                                        Windows x64 Installer
                                                         <div style={{fontSize: '0.85em', color: '#666', marginTop: '3px'}}>
-                                                            165.79 MB • Setup wizard
+                                                            Setup wizard
                                                         </div>
                                                     </td>
                                                     <td>
-                                                        <a href="https://fsn1.your-objectstorage.com/speedbitspublic/rcloneauthhelper/Rclone.Auth.Helper.Setup.exe" 
+                                                        <a href={`${RELEASES_BASE}/Rclone.Auth.Helper.Setup-x64.exe`}
                                                            target="_blank" rel="noopener noreferrer" className="btn btn-sm btn-primary">
                                                             <i className="fa fa-download" style={{marginRight: '5px'}}></i>Download
                                                         </a>
                                                     </td>
                                                 </tr>
-                                                <tr style={(this.isMatchingPlatform('windows-x64') || this.isMatchingPlatform('windows-arm64')) ? highlightStyle : {}}>
+                                                <tr style={this.isMatchingPlatform('windows-arm64') ? highlightStyle : {}}>
                                                     <td>
                                                         <i className="fa fa-windows" style={{marginRight: '8px', color: '#0078d4'}}></i>
-                                                        Windows Portable (x64 & ARM64)
+                                                        Windows ARM64 Installer
                                                         <div style={{fontSize: '0.85em', color: '#666', marginTop: '3px'}}>
-                                                            165.45 MB • No installation
+                                                            Setup wizard
                                                         </div>
                                                     </td>
                                                     <td>
-                                                        <a href="https://fsn1.your-objectstorage.com/speedbitspublic/rcloneauthhelper/Rclone.Auth.Helper-Portable.exe" 
+                                                        <a href={`${RELEASES_BASE}/Rclone.Auth.Helper.Setup-arm64.exe`}
+                                                           target="_blank" rel="noopener noreferrer" className="btn btn-sm btn-outline-primary">
+                                                            <i className="fa fa-download" style={{marginRight: '5px'}}></i>Download
+                                                        </a>
+                                                    </td>
+                                                </tr>
+                                                <tr style={this.isMatchingPlatform('windows-x64') ? highlightStyle : {}}>
+                                                    <td>
+                                                        <i className="fa fa-windows" style={{marginRight: '8px', color: '#0078d4'}}></i>
+                                                        Windows x64 Portable
+                                                        <div style={{fontSize: '0.85em', color: '#666', marginTop: '3px'}}>
+                                                            No installation
+                                                        </div>
+                                                    </td>
+                                                    <td>
+                                                        <a href={`${RELEASES_BASE}/Rclone.Auth.Helper-Portable-x64.exe`}
+                                                           target="_blank" rel="noopener noreferrer" className="btn btn-sm btn-outline-primary">
+                                                            <i className="fa fa-download" style={{marginRight: '5px'}}></i>Download
+                                                        </a>
+                                                    </td>
+                                                </tr>
+                                                <tr style={this.isMatchingPlatform('windows-arm64') ? highlightStyle : {}}>
+                                                    <td>
+                                                        <i className="fa fa-windows" style={{marginRight: '8px', color: '#0078d4'}}></i>
+                                                        Windows ARM64 Portable
+                                                        <div style={{fontSize: '0.85em', color: '#666', marginTop: '3px'}}>
+                                                            No installation
+                                                        </div>
+                                                    </td>
+                                                    <td>
+                                                        <a href={`${RELEASES_BASE}/Rclone.Auth.Helper-Portable-arm64.exe`}
                                                            target="_blank" rel="noopener noreferrer" className="btn btn-sm btn-outline-primary">
                                                             <i className="fa fa-download" style={{marginRight: '5px'}}></i>Download
                                                         </a>
@@ -623,11 +658,11 @@ class Help extends React.Component {
                                                         <i className="fa fa-apple" style={{marginRight: '8px', color: '#555'}}></i>
                                                         macOS Universal
                                                         <div style={{fontSize: '0.85em', color: '#666', marginTop: '3px'}}>
-                                                            185.32 MB • Intel & Apple Silicon
+                                                            Intel &amp; Apple Silicon
                                                         </div>
                                                     </td>
                                                     <td>
-                                                        <a href="https://fsn1.your-objectstorage.com/speedbitspublic/rcloneauthhelper/Rclone.Auth.Helper-universal.dmg" 
+                                                        <a href={`${RELEASES_BASE}/Rclone.Auth.Helper-universal.dmg`}
                                                            target="_blank" rel="noopener noreferrer" className="btn btn-sm btn-outline-primary">
                                                             <i className="fa fa-download" style={{marginRight: '5px'}}></i>Download
                                                         </a>
@@ -638,11 +673,11 @@ class Help extends React.Component {
                                                         <i className="fa fa-linux" style={{marginRight: '8px', color: '#333'}}></i>
                                                         Linux x64
                                                         <div style={{fontSize: '0.85em', color: '#666', marginTop: '3px'}}>
-                                                            107.09 MB • Portable archive
+                                                            Portable archive
                                                         </div>
                                                     </td>
                                                     <td>
-                                                        <a href="https://fsn1.your-objectstorage.com/speedbitspublic/rcloneauthhelper/RcloneAuthApp-Linux-x64.tar.gz" 
+                                                        <a href={`${RELEASES_BASE}/RcloneAuthApp-Linux-x64.tar.gz`}
                                                            target="_blank" rel="noopener noreferrer" className="btn btn-sm btn-outline-primary">
                                                             <i className="fa fa-download" style={{marginRight: '5px'}}></i>Download
                                                         </a>
@@ -653,16 +688,26 @@ class Help extends React.Component {
                                                         <i className="fa fa-linux" style={{marginRight: '8px', color: '#333'}}></i>
                                                         Linux ARM64
                                                         <div style={{fontSize: '0.85em', color: '#666', marginTop: '3px'}}>
-                                                            107.23 MB • Portable archive
+                                                            Portable archive
                                                         </div>
                                                     </td>
                                                     <td>
-                                                        <a href="https://fsn1.your-objectstorage.com/speedbitspublic/rcloneauthhelper/RcloneAuthApp-Linux-ARM64.tar.gz" 
+                                                        <a href={`${RELEASES_BASE}/RcloneAuthApp-Linux-ARM64.tar.gz`}
                                                            target="_blank" rel="noopener noreferrer" className="btn btn-sm btn-outline-primary">
                                                             <i className="fa fa-download" style={{marginRight: '5px'}}></i>Download
                                                         </a>
                                                     </td>
                                                 </tr>
+                                                <tr>
+                                                    <td colSpan="2" style={{textAlign: 'center', fontSize: '0.9em', paddingTop: '12px'}}>
+                                                        <a href="https://github.com/SpeedbitsInfinityTools/rclone-auth-helper/releases/latest"
+                                                           target="_blank" rel="noopener noreferrer">
+                                                            See all downloads (AppImage, ZIPs, release notes) &rarr;
+                                                        </a>
+                                                    </td>
+                                                </tr>
+                                                    </>);
+                                                })()}
                                             </tbody>
                                         </Table>
 

@@ -9,6 +9,7 @@ const auth = require('../auth');
 const { loadMounts, saveMounts } = require('../services/data.service');
 const { loadServers } = require('../services/data.service');
 const { axiosInstance } = require('../services/server.service');
+const mountRestore = require('../services/mount-restore.service');
 
 /**
  * Helper: Get server by ID
@@ -108,6 +109,10 @@ router.post('/create', auth.requireAdminAuth, async (req, res) => {
             console.log(`[MOUNT] ${fs} -> ${mountPoint} saved as permanent`);
         }
         
+        // Fresh mount: clear any stale backoff state from a prior failed
+        // reconciliation attempt at this path.
+        try { mountRestore.clearMountState(mountPoint); } catch (_e) { /* ignore */ }
+        
         res.json({ success: true, ...response.data });
     } catch (error) {
         console.error('[MOUNT] Creation error:', error.message);
@@ -174,7 +179,7 @@ router.post('/create', auth.requireAdminAuth, async (req, res) => {
 router.post('/unmount', auth.requireAdminAuth, async (req, res) => {
     let server = null; // Declare outside try block for catch block access
     try {
-        const { mountPoint, serverId } = req.body;
+        const { mountPoint, serverId, keepPersistent } = req.body;
         const adminPassword = req.adminPassword;
         
         if (!mountPoint) {
@@ -208,14 +213,31 @@ router.post('/unmount', auth.requireAdminAuth, async (req, res) => {
             }
         );
         
-        // Remove from persistence file
+        // Update persistence file.
         const mounts = await loadMounts();
-        const filteredMounts = mounts.filter(m => m.mountPoint !== mountPoint);
-        await saveMounts(filteredMounts);
+        if (keepPersistent === true) {
+            const updatedMounts = mounts.map((m) => {
+                if (m.mountPoint !== mountPoint) return m;
+                return {
+                    ...m,
+                    userUnmounted: true,
+                    disabled: true,
+                    unmountedAt: new Date().toISOString()
+                };
+            });
+            await saveMounts(updatedMounts);
+            console.log(`[MOUNT] ${mountPoint} marked userUnmounted=true (kept in persistence)`);            
+        } else {
+            const filteredMounts = mounts.filter(m => m.mountPoint !== mountPoint);
+            await saveMounts(filteredMounts);
+            console.log(`[MOUNT] ${mountPoint} removed from persistence`);
+        }
         
-        console.log(`[MOUNT] ${mountPoint} removed from persistence`);
+        // Clear any backoff state so a future mount at the same path starts
+        // fresh (no stale "warned about busy" cool-down).
+        try { mountRestore.clearMountState(mountPoint); } catch (_e) { /* ignore */ }
         
-        res.json({ success: true, ...response.data });
+        res.json({ success: true, keepPersistent: keepPersistent === true, ...response.data });
     } catch (error) {
         console.error('[MOUNT] Unmount error:', error.message);
         console.error('[MOUNT] Error code:', error.code);
@@ -316,6 +338,30 @@ router.get('/persistent', auth.requireAdminAuth, async (req, res) => {
     } catch (error) {
         console.error('[MOUNT] List error:', error);
         res.status(500).json({ error: 'Failed to load persistent mounts', details: error.message });
+    }
+});
+
+/**
+ * POST /director/mounts/restore-now - Force an immediate reconciliation of
+ * persistent mounts against the live rclone-rcd. Useful for:
+ *   - Operator-triggered recovery after manually fixing a zombie FUSE entry
+ *     (e.g. `sudo fusermount -uz <path>` followed by this call).
+ *   - Smoke testing the auto-restore service.
+ *   - Re-trying mounts that hit the per-mount backoff cool-down (manual
+ *     trigger bypasses the backoff check).
+ *
+ * Protected: Requires admin authentication.
+ *
+ * Response: { trigger, checked, restored, alreadyMounted, skipped, failed, errors[] }
+ */
+router.post('/restore-now', auth.requireAdminAuth, async (req, res) => {
+    try {
+        const summary = await mountRestore.reconcileOnce({ trigger: 'manual' });
+        console.log(`[MOUNT-RESTORE] Manual restore via API: checked=${summary.checked} restored=${summary.restored} alreadyMounted=${summary.alreadyMounted} skipped=${summary.skipped} failed=${summary.failed}`);
+        res.json({ success: summary.failed === 0, ...summary });
+    } catch (error) {
+        console.error('[MOUNT-RESTORE] Manual restore failed:', error.message);
+        res.status(500).json({ error: 'Failed to run mount restore', details: error.message });
     }
 });
 

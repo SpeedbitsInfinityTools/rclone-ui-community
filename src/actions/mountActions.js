@@ -58,12 +58,15 @@ export const addMount = (fs, mountPoint, mountType, vfsOpt, mountOpt) => {
 }
 
 /**
- * unmount removes an mounted location "mountPoint"
- * Uses Director API to also remove from persistent storage
+ * unmount removes a mounted location "mountPoint"
+ * Uses Director API and can either:
+ *  - remove from persistence (default), or
+ *  - keep definition with userUnmounted/disabled flags.
  * @param mountPoint                {string}    Path to location where the mount was created.
+ * @param keepPersistent            {boolean}   Keep mount definition disabled in persistence.
  * @returns {function(...[*]=)}
  */
-export const unmount = (mountPoint) => {
+export const unmount = (mountPoint, keepPersistent = false) => {
 	const type = REMOVE_MOUNT;
 	return (dispatch) => {
 		// Get the currently selected server ID from localStorage
@@ -72,7 +75,8 @@ export const unmount = (mountPoint) => {
 		// Use Director's enhanced unmount which also removes from persistence
 		directorUnmount({
 			mountPoint,
-			serverId: currentServerId  // Use the currently selected server
+			serverId: currentServerId,  // Use the currently selected server
+			keepPersistent
 		}).then(res => {
 			dispatch({
 				type,

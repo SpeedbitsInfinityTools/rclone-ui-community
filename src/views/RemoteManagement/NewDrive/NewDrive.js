@@ -1652,33 +1652,69 @@ class NewDrive extends React.Component {
                                             border: '3px solid #0066cc',
                                             fontWeight: 'bold'
                                         };
+                                        // Single source of truth for the helper download URLs.
+                                        // Points at the PUBLIC mirror repo (the source repo can stay
+                                        // private). The "latest" alias means we never serve a stale
+                                        // build by accident — whatever the CI workflow last published
+                                        // is what users get.
+                                        const RELEASES_BASE = 'https://github.com/SpeedbitsInfinityTools/rclone-auth-helper/releases/latest/download';
                                         return (
                                             <>
-                                                <tr style={(this.isMatchingPlatform('windows-x64') || this.isMatchingPlatform('windows-arm64')) ? highlightStyle : {}}>
+                                                <tr style={this.isMatchingPlatform('windows-x64') ? highlightStyle : {}}>
                                                     <td>
                                                         <i className="fa fa-windows" style={{marginRight: '8px', color: '#0078d4'}}></i>
-                                                        Windows Installer (x64 & ARM64)
+                                                        Windows x64 Installer
                                                         <div style={{fontSize: '0.85em', color: '#666', marginTop: '3px'}}>
-                                                            165.79 MB • Setup wizard
+                                                            Setup wizard
                                                         </div>
                                                     </td>
                                                     <td>
-                                                        <a href="https://fsn1.your-objectstorage.com/speedbitspublic/rcloneauthhelper/Rclone.Auth.Helper.Setup.exe" 
+                                                        <a href={`${RELEASES_BASE}/Rclone.Auth.Helper.Setup-x64.exe`}
                                                            target="_blank" rel="noopener noreferrer" className="btn btn-sm btn-primary">
                                                             <i className="fa fa-download" style={{marginRight: '5px'}}></i>Download
                                                         </a>
                                                     </td>
                                                 </tr>
-                                                <tr style={(this.isMatchingPlatform('windows-x64') || this.isMatchingPlatform('windows-arm64')) ? highlightStyle : {}}>
+                                                <tr style={this.isMatchingPlatform('windows-arm64') ? highlightStyle : {}}>
                                                     <td>
                                                         <i className="fa fa-windows" style={{marginRight: '8px', color: '#0078d4'}}></i>
-                                                        Windows Portable (x64 & ARM64)
+                                                        Windows ARM64 Installer
                                                         <div style={{fontSize: '0.85em', color: '#666', marginTop: '3px'}}>
-                                                            165.45 MB • No installation
+                                                            Setup wizard
                                                         </div>
                                                     </td>
                                                     <td>
-                                                        <a href="https://fsn1.your-objectstorage.com/speedbitspublic/rcloneauthhelper/Rclone.Auth.Helper-Portable.exe" 
+                                                        <a href={`${RELEASES_BASE}/Rclone.Auth.Helper.Setup-arm64.exe`}
+                                                           target="_blank" rel="noopener noreferrer" className="btn btn-sm btn-outline-primary">
+                                                            <i className="fa fa-download" style={{marginRight: '5px'}}></i>Download
+                                                        </a>
+                                                    </td>
+                                                </tr>
+                                                <tr style={this.isMatchingPlatform('windows-x64') ? highlightStyle : {}}>
+                                                    <td>
+                                                        <i className="fa fa-windows" style={{marginRight: '8px', color: '#0078d4'}}></i>
+                                                        Windows x64 Portable
+                                                        <div style={{fontSize: '0.85em', color: '#666', marginTop: '3px'}}>
+                                                            No installation
+                                                        </div>
+                                                    </td>
+                                                    <td>
+                                                        <a href={`${RELEASES_BASE}/Rclone.Auth.Helper-Portable-x64.exe`}
+                                                           target="_blank" rel="noopener noreferrer" className="btn btn-sm btn-outline-primary">
+                                                            <i className="fa fa-download" style={{marginRight: '5px'}}></i>Download
+                                                        </a>
+                                                    </td>
+                                                </tr>
+                                                <tr style={this.isMatchingPlatform('windows-arm64') ? highlightStyle : {}}>
+                                                    <td>
+                                                        <i className="fa fa-windows" style={{marginRight: '8px', color: '#0078d4'}}></i>
+                                                        Windows ARM64 Portable
+                                                        <div style={{fontSize: '0.85em', color: '#666', marginTop: '3px'}}>
+                                                            No installation
+                                                        </div>
+                                                    </td>
+                                                    <td>
+                                                        <a href={`${RELEASES_BASE}/Rclone.Auth.Helper-Portable-arm64.exe`}
                                                            target="_blank" rel="noopener noreferrer" className="btn btn-sm btn-outline-primary">
                                                             <i className="fa fa-download" style={{marginRight: '5px'}}></i>Download
                                                         </a>
@@ -1689,11 +1725,11 @@ class NewDrive extends React.Component {
                                                         <i className="fa fa-apple" style={{marginRight: '8px', color: '#555'}}></i>
                                                         macOS Universal
                                                         <div style={{fontSize: '0.85em', color: '#666', marginTop: '3px'}}>
-                                                            185.32 MB • Intel & Apple Silicon
+                                                            Intel &amp; Apple Silicon
                                                         </div>
                                                     </td>
                                                     <td>
-                                                        <a href="https://fsn1.your-objectstorage.com/speedbitspublic/rcloneauthhelper/Rclone.Auth.Helper-universal.dmg" 
+                                                        <a href={`${RELEASES_BASE}/Rclone.Auth.Helper-universal.dmg`}
                                                            target="_blank" rel="noopener noreferrer" className="btn btn-sm btn-outline-primary">
                                                             <i className="fa fa-download" style={{marginRight: '5px'}}></i>Download
                                                         </a>
@@ -1704,11 +1740,11 @@ class NewDrive extends React.Component {
                                                         <i className="fa fa-linux" style={{marginRight: '8px', color: '#333'}}></i>
                                                         Linux x64
                                                         <div style={{fontSize: '0.85em', color: '#666', marginTop: '3px'}}>
-                                                            107.09 MB • Portable archive
+                                                            Portable archive
                                                         </div>
                                                     </td>
                                                     <td>
-                                                        <a href="https://fsn1.your-objectstorage.com/speedbitspublic/rcloneauthhelper/RcloneAuthApp-Linux-x64.tar.gz" 
+                                                        <a href={`${RELEASES_BASE}/RcloneAuthApp-Linux-x64.tar.gz`}
                                                            target="_blank" rel="noopener noreferrer" className="btn btn-sm btn-outline-primary">
                                                             <i className="fa fa-download" style={{marginRight: '5px'}}></i>Download
                                                         </a>
@@ -1719,13 +1755,21 @@ class NewDrive extends React.Component {
                                                         <i className="fa fa-linux" style={{marginRight: '8px', color: '#333'}}></i>
                                                         Linux ARM64
                                                         <div style={{fontSize: '0.85em', color: '#666', marginTop: '3px'}}>
-                                                            107.23 MB • Portable archive
+                                                            Portable archive
                                                         </div>
                                                     </td>
                                                     <td>
-                                                        <a href="https://fsn1.your-objectstorage.com/speedbitspublic/rcloneauthhelper/RcloneAuthApp-Linux-ARM64.tar.gz" 
+                                                        <a href={`${RELEASES_BASE}/RcloneAuthApp-Linux-ARM64.tar.gz`}
                                                            target="_blank" rel="noopener noreferrer" className="btn btn-sm btn-outline-primary">
                                                             <i className="fa fa-download" style={{marginRight: '5px'}}></i>Download
+                                                        </a>
+                                                    </td>
+                                                </tr>
+                                                <tr>
+                                                    <td colSpan="2" style={{textAlign: 'center', fontSize: '0.9em', paddingTop: '12px'}}>
+                                                        <a href="https://github.com/SpeedbitsInfinityTools/rclone-auth-helper/releases/latest"
+                                                           target="_blank" rel="noopener noreferrer">
+                                                            See all downloads (AppImage, ZIPs, release notes) &rarr;
                                                         </a>
                                                     </td>
                                                 </tr>

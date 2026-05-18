@@ -7,6 +7,12 @@ const express = require('express');
 const router = express.Router();
 const auth = require('../auth');
 const { loadServers, saveServers, loadTemplates, saveTemplates } = require('../services/data.service');
+let mountRestore = null;
+try {
+    mountRestore = require('../services/mount-restore.service');
+} catch (_e) {
+    // Optional dependency in older deployments.
+}
 
 /**
  * POST /director/auth/login - Verify admin password and create session
@@ -31,6 +37,15 @@ router.post('/login', async (req, res) => {
         
         // Create session and store master key on SERVER (not sent to frontend!)
         const sessionKey = auth.createSession(username, masterKey);
+        
+        // Cache master key for the mount auto-restore loop so it can decrypt
+        // encrypted server passwords without a live request. Done lazily so a
+        // missing module doesn't break login.
+        try {
+            if (mountRestore && typeof mountRestore.setMasterKey === 'function') {
+                mountRestore.setMasterKey(masterKey);
+            }
+        } catch (_e) { /* mount-restore service is optional */ }
         
         console.log('[AUTH] Login successful, session created');
         
@@ -123,6 +138,9 @@ router.post('/change-password', auth.requireAdminAuth, async (req, res) => {
         // CRITICAL: Destroy ALL sessions after password change
         // This forces all users to re-login with the new password
         auth.destroyAllUserSessions('admin');
+        if (mountRestore && typeof mountRestore.clearMasterKey === 'function') {
+            mountRestore.clearMasterKey();
+        }
         console.log('[AUTH] All sessions destroyed after password change');
         
         res.json({ 
@@ -143,6 +161,9 @@ router.post('/logout', auth.requireAdminAuth, (req, res) => {
     try {
         const sessionKey = req.sessionKey;
         auth.destroySession(sessionKey);
+        if (mountRestore && typeof mountRestore.clearMasterKey === 'function') {
+            mountRestore.clearMasterKey();
+        }
         
         res.json({ 
             success: true,

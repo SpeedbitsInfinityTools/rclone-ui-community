@@ -3,6 +3,7 @@ import {connect} from "react-redux";
 import {Badge, Button, Col, Row, Table} from "reactstrap";
 import * as PropTypes from "prop-types";
 import {addMount, getMountList, unmount, unmountAll} from "../../actions/mountActions";
+import {getPersistentMounts} from "../../utils/API/director";
 import NewMountModal from "./NewMountModal";
 
 /**
@@ -16,7 +17,13 @@ class MountDashboard extends React.Component {
 			showNewMountCard: false,
 			isRefreshing: false,
 			checkingConnection: false,
-			connectionFailed: null
+			connectionFailed: null,
+			// Map of mountPoint → { readOnly: bool, permanent: bool } from the
+			// director's persistence file. We merge this with the runtime
+			// mount/listmounts data because some rclone-rcd versions don't
+			// reliably return VfsOpt.ReadOnly in mount/listmounts even when
+			// the mount was created with --vfs-read-only / ReadOnly:true.
+			persistedByPath: {}
 		}
 		// Track the server ID for the current connection check to prevent race conditions
 		this.pendingCheckServerId = null;
@@ -39,6 +46,32 @@ class MountDashboard extends React.Component {
 		// Clean up event listener
 		if (this.serverChangeHandler) {
 			window.removeEventListener('rclone-server-changed', this.serverChangeHandler);
+		}
+	}
+
+	/**
+	 * Pull the director's persisted-mounts list and build a quick lookup map
+	 * keyed by mountPoint so the render code can fall back to it when the
+	 * live rclone-rcd `mount/listmounts` response doesn't carry
+	 * `VfsOpt.ReadOnly`. Best-effort: failures here just leave the table
+	 * showing whatever the runtime view provides.
+	 */
+	_loadPersistedMounts = async () => {
+		try {
+			const res = await getPersistentMounts();
+			const list = Array.isArray(res?.mounts) ? res.mounts : [];
+			const map = {};
+			for (const m of list) {
+				if (!m || !m.mountPoint) continue;
+				const v = m.vfsOpt || {};
+				const ro = v.ReadOnly === true || v.ReadOnly === 'true'
+					|| v.ReadOnly === 1 || v.ReadOnly === '1';
+				map[m.mountPoint] = { readOnly: ro, permanent: m.permanent !== false };
+			}
+			this.setState({ persistedByPath: map });
+		} catch (err) {
+			console.warn('[MountDashboard] Could not load persistent mounts:', err.message);
+			// Keep whatever map we had; runtime data still drives the table.
 		}
 	}
 
@@ -71,7 +104,13 @@ class MountDashboard extends React.Component {
 			
 			// If successful, dispatch Redux action to populate store
 			getMountList();
-			
+
+			// Also pull the persisted mount records so we can show RO/RW and
+			// "permanent" badges based on what was actually requested at
+			// create-time (the rclone-rcd runtime view is sometimes
+			// incomplete — VfsOpt.ReadOnly is missing in some versions).
+			this._loadPersistedMounts();
+
 			console.log(`[MountDashboard] Connection check succeeded for server: ${currentServerId}`);
 			this.setState({ 
 				checkingConnection: false,
@@ -96,6 +135,7 @@ class MountDashboard extends React.Component {
 	handleRefresh = async () => {
 		const {getMountList} = this.props;
 		this.setState({ isRefreshing: true });
+		this._loadPersistedMounts();
 		try {
 			// Make a direct API call to refresh
 			const axiosInstance = require('../../utils/API/API').default;
@@ -274,10 +314,17 @@ class MountDashboard extends React.Component {
 					{
 						currentMounts && currentMounts.map((item, index) => {
 								const readOnlyValue = item.VfsOpt?.ReadOnly;
-								const isReadOnly = readOnlyValue === true ||
+								let isReadOnly = readOnlyValue === true ||
 									readOnlyValue === 'true' ||
 									readOnlyValue === 1 ||
 									readOnlyValue === '1';
+								// Fallback to the persisted record — the
+								// authoritative source for "was this mount
+								// requested as read-only?" when rclone-rcd's
+								// runtime listmounts strips VfsOpt.ReadOnly.
+								if (!isReadOnly && this.state.persistedByPath?.[item.MountPoint]?.readOnly) {
+									isReadOnly = true;
+								}
 								return (<tr key={item.MountPoint}>
 									<td>{index + 1}</td>
 									<td>{item.MountPoint}</td>

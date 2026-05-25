@@ -1,4 +1,4 @@
-import {GET_CONFIG_DUMP, GET_PROVIDERS, REQUEST_ERROR, REQUEST_SUCCESS} from "./types";
+import {GET_CONFIG_DUMP, GET_PROVIDERS, REMOVE_CONFIG_DUMP_ENTRY, REQUEST_ERROR, REQUEST_SUCCESS} from "./types";
 import {getAllConfigDump, getAllProviders} from "rclone-api";
 import {toast} from "react-toastify";
 
@@ -44,6 +44,21 @@ export const getProviders = (suppressToast = false) => dispatch => {
  * @param {boolean} suppressToast - If true, don't show toast notifications (for pages with custom error handling)
  * @returns {Function}
  */
+/**
+ * Optimistically remove one or more remotes from the Redux configDump so
+ * the UI updates instantly after a config/delete, without waiting for the
+ * follow-up config/dump round-trip.
+ *
+ * The next successful getConfigDump() will replace the dump wholesale, so
+ * this is purely a UX latency hack and self-corrects on the next refresh.
+ *
+ * @param {string|string[]} names - Remote name(s) to drop from the dump.
+ */
+export const removeConfigDumpEntry = (names) => ({
+    type: REMOVE_CONFIG_DUMP_ENTRY,
+    payload: names
+});
+
 export const getConfigDump = (suppressToast = false) => dispatch => {
     getAllConfigDump().then(res => dispatch({
         type: GET_CONFIG_DUMP,

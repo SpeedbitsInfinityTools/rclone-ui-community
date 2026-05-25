@@ -279,7 +279,7 @@ class MountDashboard extends React.Component {
 									readOnlyValue === 1 ||
 									readOnlyValue === '1';
 								return (<tr key={item.MountPoint}>
-									<td>{index}</td>
+									<td>{index + 1}</td>
 									<td>{item.MountPoint}</td>
 									<td>
 										{isReadOnly

@@ -65,7 +65,13 @@ class ConfigRow extends React.Component {
     handleSharePointCloneConfirm(_selection) {
         this.setState({ showSharePointPicker: false });
         if (typeof this.props.refreshHandle === 'function') {
+            // Refresh immediately so the new clone appears, plus a delayed
+            // retry to catch rclone-rcd's brief flush window after
+            // config/create.
             this.props.refreshHandle();
+            setTimeout(() => {
+                try { this.props.refreshHandle(); } catch (_) { /* ignore */ }
+            }, 800);
         }
     }
 
@@ -139,67 +145,62 @@ class ConfigRow extends React.Component {
     }
 
     /**
-     * Check authentication status for this remote
+     * Check authentication status for this remote.
+     *
+     * For OAuth remotes, we trust the local config dump first: if the dump
+     * carries a `token` (or access_token/refresh_token) field, the remote is
+     * authenticated — no backend round-trip needed. This avoids a long-running
+     * race where /oauth/check times out against rclone-rcd right after a save
+     * (or after a clone-remote) and the UI then shows "Not Authenticated"
+     * indefinitely until the user reloads.
+     *
+     * The backend /oauth/check is still used as a fallback when the dump has
+     * no token (legacy remotes, or remotes saved while rclone-rcd hadn't yet
+     * flushed the token to the on-disk config).
      */
     async checkAuthStatus() {
         const {remote, remoteName} = this.props;
         const {type} = remote;
-        
-        // Don't check if already checking or if status is cached
+
         if (this.state.authStatus === 'checking') {
             return;
         }
-        
+
         this.setState({ authStatus: 'checking', authStatusError: null, accountInfo: null });
-        
+
         try {
             if (this.isOAuthRemote(type)) {
-                // OAuth remote - check via Director API
+                const dumpHasToken = !!(
+                    remote?.token ||
+                    remote?.access_token ||
+                    remote?.refresh_token ||
+                    remote?.parameters?.token ||
+                    remote?.parameters?.access_token ||
+                    remote?.parameters?.refresh_token
+                );
+
                 const selectedServerId = sessionStorage.getItem('RCLONE_SERVER_ID');
                 const serverId = selectedServerId && selectedServerId !== 'null' ? selectedServerId : null;
-                
+
+                if (dumpHasToken) {
+                    this.setState({ authStatus: 'authenticated', authStatusError: null });
+                    this._fetchAccountInfoAsync(remoteName, serverId);
+                    return;
+                }
+
                 try {
                     const statusResponse = await checkOAuthStatus(remoteName, serverId);
                     if (statusResponse.success && statusResponse.authenticated) {
                         this.setState({ authStatus: 'authenticated', authStatusError: null });
-                        
-                        // Fetch account info for authenticated remotes
-                        try {
-                            const accountResponse = await getOAuthAccountInfo(remoteName, serverId);
-                            if (accountResponse && accountResponse.success && accountResponse.account) {
-                                this.setState({ accountInfo: accountResponse.account });
-                                console.log(`[ConfigRow] Account info for ${remoteName}:`, accountResponse.account);
-                            }
-                        } catch (accountError) {
-                            console.log(`[ConfigRow] Could not fetch account info for ${remoteName}:`, accountError.message);
-                            
-                            // If it's a timeout, retry once after a delay
-                            if (accountError.code === 'ECONNABORTED' || accountError.message?.includes('timeout')) {
-                                console.log(`[ConfigRow] Retrying account info for ${remoteName} after timeout...`);
-                                setTimeout(async () => {
-                                    try {
-                                        const retryResponse = await getOAuthAccountInfo(remoteName, serverId);
-                                        if (retryResponse && retryResponse.success && retryResponse.account) {
-                                            this.setState({ accountInfo: retryResponse.account });
-                                            console.log(`[ConfigRow] Account info for ${remoteName} (retry):`, retryResponse.account);
-                                        }
-                                    } catch (retryError) {
-                                        console.log(`[ConfigRow] Retry failed for ${remoteName}:`, retryError.message);
-                                        // Give up after one retry
-                                    }
-                                }, 2000); // Wait 2 seconds before retry
-                            }
-                        }
+                        this._fetchAccountInfoAsync(remoteName, serverId);
                     } else {
                         this.setState({ authStatus: 'not_authenticated', authStatusError: null });
                     }
                 } catch (error) {
                     console.error(`[ConfigRow] Error checking OAuth status for ${remoteName}:`, error);
-                    // On error, assume not authenticated
                     this.setState({ authStatus: 'not_authenticated', authStatusError: error.message });
                 }
             } else {
-                // Non-OAuth remote - check for credentials
                 if (this.hasCredentials(remote)) {
                     this.setState({ authStatus: 'configured', authStatusError: null });
                 } else {
@@ -209,6 +210,26 @@ class ConfigRow extends React.Component {
         } catch (error) {
             console.error(`[ConfigRow] Error checking auth status for ${remoteName}:`, error);
             this.setState({ authStatus: 'na', authStatusError: error.message });
+        }
+    }
+
+    /**
+     * Fetch the linked account's email/name in the background. Failures are
+     * non-fatal — the row remains "Authenticated" but without an email line.
+     * Retries once on a timeout.
+     */
+    async _fetchAccountInfoAsync(remoteName, serverId, attempt = 0) {
+        try {
+            const accountResponse = await getOAuthAccountInfo(remoteName, serverId);
+            if (accountResponse && accountResponse.success && accountResponse.account) {
+                this.setState({ accountInfo: accountResponse.account });
+            }
+        } catch (accountError) {
+            console.log(`[ConfigRow] Could not fetch account info for ${remoteName}:`, accountError.message);
+            const isTimeout = accountError.code === 'ECONNABORTED' || accountError.message?.includes('timeout');
+            if (isTimeout && attempt === 0) {
+                setTimeout(() => this._fetchAccountInfoAsync(remoteName, serverId, 1), 2000);
+            }
         }
     }
 
@@ -293,30 +314,44 @@ class ConfigRow extends React.Component {
 
     async handleConfirmDelete() {
         const {name, type} = this.state.remote;
-        let {refreshHandle} = this.props;
+        const {refreshHandle, removeRemoteOptimistic} = this.props;
 
         this.setState({ isDeleting: true });
 
         try {
-            // Delete the main remote
             await axiosInstance.post(urls.deleteConfig, {name: name});
-            
-            // If this is a crypt remote, also delete its base remote
+
+            const removedNames = [name];
             if (type === 'crypt') {
                 const baseRemoteName = `${name}_base`;
                 try {
                     await axiosInstance.post(urls.deleteConfig, {name: baseRemoteName});
+                    removedNames.push(baseRemoteName);
                     console.log(`Also deleted base remote: ${baseRemoteName}`);
                 } catch (err) {
                     console.warn(`Base remote ${baseRemoteName} not found or already deleted:`, err);
-                    // Don't show error to user - base remote might not exist
                 }
             }
-            
-            // Close modal and refresh the parent component
+
             this.toggleDeleteModal();
-            refreshHandle();
             toast.success('Remote deleted successfully');
+
+            // Optimistically drop the row from the Redux dump so it
+            // disappears immediately, even if the follow-up dump fetch is
+            // slow or briefly returns stale data from rclone-rcd.
+            if (typeof removeRemoteOptimistic === 'function') {
+                removeRemoteOptimistic(removedNames);
+            }
+
+            if (typeof refreshHandle === 'function') {
+                // Immediate refresh, plus a delayed retry to catch rclone-rcd's
+                // brief eventually-consistent window after config/delete (we've
+                // seen the dump still report the deleted remote for ~500ms).
+                refreshHandle();
+                setTimeout(() => {
+                    try { refreshHandle(); } catch (_) { /* ignore */ }
+                }, 800);
+            }
         } catch (err) {
             console.error(`Error deleting remote: ${err}`);
             toast.error('Error deleting remote');

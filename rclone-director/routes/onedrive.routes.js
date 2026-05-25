@@ -34,20 +34,52 @@ const SITE_ID_RE = /^[A-Za-z0-9_.-]+(?:\.[A-Za-z0-9_.-]+)+,[0-9a-f-]+,[0-9a-f-]+
  * Map a thrown error to an HTTP response. Errors raised by the service /
  * provider layers carry an optional `.status`. Otherwise we map common
  * connection problems to 503 and everything else to 500.
+ *
+ * When the underlying error came from rclone-rcd (an axios error), we lift
+ * the RCD response body up into our own message so the UI shows a useful
+ * reason instead of the bare "Request failed with status code 500".
  */
 function sendError(res, error, context) {
-    const status = error.status || (
+    let status = error.status || (
         ['ECONNREFUSED', 'ENOTFOUND', 'ETIMEDOUT'].includes(error.code) ? 503 : 500
     );
+
+    // If this is an axios error from a downstream call (rclone-rcd or Graph),
+    // pull the real message out of error.response.data so we don't show the
+    // generic "Request failed with status code 500" wrapper.
+    let message = error.message || 'Internal Server Error';
+    let rcdStatus = null;
+    let rcdBody = null;
+    if (error.response) {
+        rcdStatus = error.response.status;
+        rcdBody = error.response.data;
+        const detail =
+            (rcdBody && (rcdBody.error || rcdBody.message || rcdBody.error_description)) ||
+            (typeof rcdBody === 'string' ? rcdBody : null);
+        if (detail) {
+            message = `rclone backend (HTTP ${rcdStatus}): ${detail}`;
+        } else if (rcdStatus) {
+            message = `rclone backend returned HTTP ${rcdStatus}`;
+        }
+        // For 409-ish conflicts surface them as 409, not 500.
+        if (!error.status && rcdStatus >= 400 && rcdStatus < 500) {
+            status = rcdStatus;
+        }
+    }
+
     const payload = {
-        error: error.message || 'Internal Server Error',
+        error: message,
         code: error.code || undefined,
         context
     };
+    if (rcdBody && process.env.NODE_ENV !== 'production') {
+        payload.rclone = rcdBody;
+    }
     if (process.env.NODE_ENV === 'development' && error.graph) {
         payload.graph = error.graph;
     }
-    console.error(`[ONEDRIVE] ${context || 'error'}:`, error.message);
+    console.error(`[ONEDRIVE] ${context || 'error'}: ${message}`,
+        rcdBody ? ` | rcd body: ${JSON.stringify(rcdBody).slice(0, 500)}` : '');
     res.status(status).json(payload);
 }
 
@@ -61,15 +93,21 @@ router.post('/discover-locations', auth.requireAdminAuth, async (req, res) => {
         const { remote_name } = req.body || {};
         const { server, password, remoteName, creds } = await loadOneDriveCredentials(req, remote_name);
 
-        // Run the two Graph calls in parallel — they share the OAuth token but
-        // each may independently trigger a refresh on 401.
-        const [personalResult, sitesResult] = await Promise.allSettled([
+        // Run three Graph calls in parallel: personal drives, sites, account.
+        // They share the OAuth token; any may independently trigger a refresh
+        // on 401. We surface the account info so the picker can show *whose*
+        // token will be reused — critical when the user has multiple OneDrive
+        // remotes for different accounts and shouldn't have to guess.
+        const [personalResult, sitesResult, accountResult] = await Promise.allSettled([
             creds.provider.listPersonalDrives(creds.accessToken, creds.refreshToken, {
                 clientId: creds.clientId, clientSecret: creds.clientSecret, region: creds.region
             }),
             creds.provider.searchSites(creds.accessToken, creds.refreshToken, {
                 clientId: creds.clientId, clientSecret: creds.clientSecret, region: creds.region
-            }, '*')
+            }, '*'),
+            creds.provider.getAccountInfo(creds.accessToken, creds.refreshToken, {
+                clientId: creds.clientId, clientSecret: creds.clientSecret, region: creds.region
+            })
         ]);
 
         const personal = personalResult.status === 'fulfilled'
@@ -80,8 +118,16 @@ router.post('/discover-locations', auth.requireAdminAuth, async (req, res) => {
             ? sitesResult.value
             : { sites: [], newToken: null, restricted: false, error: sitesResult.reason?.message || 'Failed to list sites' };
 
-        // If either call refreshed the token, persist it once.
-        const newToken = personal.newToken || sites.newToken;
+        let account = null;
+        let accountNewToken = null;
+        if (accountResult.status === 'fulfilled') {
+            const v = accountResult.value;
+            account = v?.accountInfo || v || null;
+            accountNewToken = v?.newToken || null;
+        }
+
+        // If any call refreshed the token, persist it once.
+        const newToken = personal.newToken || sites.newToken || accountNewToken;
         if (newToken) {
             await persistRefreshedToken(server, password, remoteName, creds.rawConfig, newToken);
         }
@@ -92,7 +138,8 @@ router.post('/discover-locations', auth.requireAdminAuth, async (req, res) => {
             sites: sites.sites || [],
             restricted: !!sites.restricted,
             sitesError: sites.error || null,
-            current: { drive_id: creds.currentDriveId, drive_type: creds.currentDriveType }
+            current: { drive_id: creds.currentDriveId, drive_type: creds.currentDriveType },
+            account
         });
     } catch (error) {
         sendError(res, error, 'discover-locations');
@@ -235,42 +282,127 @@ router.post('/clone-remote', auth.requireAdminAuth, async (req, res) => {
             });
         }
 
-        // Build the parameters block from the source remote's parameters,
-        // replacing drive_id / drive_type. We keep token, region, client_id
-        // and client_secret so the clone authenticates identically.
-        const sourceParams = (creds.rawConfig.parameters && Object.keys(creds.rawConfig.parameters).length > 0)
-            ? { ...creds.rawConfig.parameters }
-            : { ...creds.rawConfig };
-        // Strip fields that don't belong in `parameters` for config/create.
-        delete sourceParams.name;
-        delete sourceParams.type;
+        // Build the parameters block for the new remote.
+        //
+        // We DO NOT spread the entire source config — that risks copying
+        // internal/computed rclone fields (or unexpected types) that
+        // config/create will reject with an opaque 500. Instead, copy only an
+        // explicit allowlist of OneDrive-relevant settings, then stamp the
+        // token + the new drive_id / drive_type on top.
+        const COPY_KEYS = [
+            'auth_url', 'token_url', 'tenant',
+            'chunk_size', 'upload_cutoff',
+            'expose_onenote_files', 'server_side_across_configs',
+            'no_versions', 'link_scope', 'link_type', 'link_password',
+            'list_chunk', 'hash_type', 'av_override',
+            'access_scopes', 'disable_site_permission',
+            'root_folder_id', 'metadata_permissions',
+            'delta', 'hard_delete'
+        ];
+        const src = (creds.rawConfig.parameters && Object.keys(creds.rawConfig.parameters).length > 0)
+            ? creds.rawConfig.parameters
+            : creds.rawConfig;
 
-        const newParameters = {
-            ...sourceParams,
-            token: creds.tokenString,
-            region: creds.region,
-            client_id: creds.clientId || '',
-            client_secret: creds.clientSecret || '',
-            drive_id: drive_id.trim(),
-            drive_type: normalizedDriveType
-        };
-        // Don't write empty client_id/secret (rclone uses bundled defaults when absent).
-        if (!newParameters.client_id) delete newParameters.client_id;
-        if (!newParameters.client_secret) delete newParameters.client_secret;
+        const newParameters = {};
+        for (const key of COPY_KEYS) {
+            const v = src && src[key];
+            // Only copy primitive, non-empty values — rclone rejects objects
+            // and is happier with absent keys than with empty strings.
+            if (v === undefined || v === null || v === '') continue;
+            if (typeof v === 'object') continue;
+            newParameters[key] = typeof v === 'string' ? v : String(v);
+        }
 
-        await rcConfigCreate(server, password, {
-            name: safeNewName,
-            type: 'onedrive',
-            parameters: newParameters
-        });
+        // Required OAuth + drive identification fields, always stamped fresh.
+        newParameters.token = creds.tokenString;
+        if (creds.region) newParameters.region = creds.region;
+        if (creds.clientId) newParameters.client_id = creds.clientId;
+        if (creds.clientSecret) newParameters.client_secret = creds.clientSecret;
+        newParameters.drive_id = drive_id.trim();
+        newParameters.drive_type = normalizedDriveType;
 
-        console.log(`[ONEDRIVE] Cloned remote "${sourceName}" → "${safeNewName}" with drive_id=${drive_id} drive_type=${normalizedDriveType}`);
+        console.log(`[ONEDRIVE] Cloning "${sourceName}" → "${safeNewName}"`,
+            `keys=${Object.keys(newParameters).join(',')}`,
+            `drive_type=${normalizedDriveType}`);
+
+        // rclone-rcd's config/create is known to write the on-disk config and
+        // THEN attempt a token-validation round-trip; that validation can fail
+        // for OneDrive (e.g. an expired access_token, or Graph being briefly
+        // unreachable) and bubble up as an HTTP 500 even though the new remote
+        // is already saved. So we don't trust the HTTP status alone — after
+        // any failure, we re-list remotes and treat "the new name is now
+        // present" as success.
+        let createDidThrow = null;
+        try {
+            await rcConfigCreate(server, password, {
+                name: safeNewName,
+                type: 'onedrive',
+                parameters: newParameters
+            });
+        } catch (createErr) {
+            createDidThrow = createErr;
+        }
+
+        if (createDidThrow) {
+            console.warn(`[ONEDRIVE] config/create for "${safeNewName}" reported error: ${createDidThrow.message}` +
+                (createDidThrow.response?.status ? ` (HTTP ${createDidThrow.response.status})` : '') +
+                ` — verifying whether the remote was actually written...`);
+
+            // Give rcd a moment to finish writing rclone.conf, then re-list.
+            await new Promise(r => setTimeout(r, 500));
+            let createdAnyway = false;
+            try {
+                const remotesAfter = await rcListRemotes(server, password);
+                createdAnyway = remotesAfter.includes(safeNewName);
+            } catch (listErr) {
+                console.warn(`[ONEDRIVE] post-create listremotes failed:`, listErr.message);
+            }
+
+            if (createdAnyway) {
+                console.log(`[ONEDRIVE] config/create for "${safeNewName}" returned an error but the remote ` +
+                    `exists in rclone.conf — treating as success.`);
+            } else {
+                // Genuine failure — surface the real rcd body to the UI.
+                const wrapped = new Error(
+                    createDidThrow.response?.data?.error
+                    || createDidThrow.response?.data?.message
+                    || createDidThrow.message
+                    || 'config/create failed'
+                );
+                wrapped.response = createDidThrow.response;
+                wrapped.code = createDidThrow.code;
+                wrapped.status = createDidThrow.response?.status >= 400 && createDidThrow.response?.status < 500
+                    ? createDidThrow.response.status
+                    : 500;
+                throw wrapped;
+            }
+        }
+
+        // Best-effort verification: read the new remote's token back, hit
+        // /me to confirm which account it actually belongs to. This catches
+        // the multi-account-mixup case where the user clicked clone on a
+        // remote that wasn't the one they thought it was.
+        let verifyAccount = null;
+        try {
+            const verify = await creds.provider.getAccountInfo(
+                creds.accessToken, creds.refreshToken,
+                { clientId: creds.clientId, clientSecret: creds.clientSecret, region: creds.region }
+            );
+            // getAccountInfo returns { email, name } directly OR { accountInfo, newToken } when it refreshed
+            verifyAccount = verify?.accountInfo || verify || null;
+        } catch (verifyErr) {
+            console.warn(`[ONEDRIVE] Post-clone verify failed (clone still created):`, verifyErr.message);
+        }
+
+        console.log(`[ONEDRIVE] Cloned remote "${sourceName}" → "${safeNewName}" with drive_id=${drive_id} drive_type=${normalizedDriveType}` +
+            (verifyAccount ? ` (account: ${verifyAccount.email || verifyAccount.name})` : ''));
         res.json({
             success: true,
             name: safeNewName,
             source_remote: sourceName,
             drive_id: drive_id,
-            drive_type: normalizedDriveType
+            drive_type: normalizedDriveType,
+            account: verifyAccount
         });
     } catch (error) {
         sendError(res, error, 'clone-remote');

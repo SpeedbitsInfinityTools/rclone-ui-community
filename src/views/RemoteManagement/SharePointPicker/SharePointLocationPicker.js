@@ -65,6 +65,7 @@ class SharePointLocationPicker extends React.Component {
             restricted: false,
             sitesError: null,
             current: null,
+            account: null,
             // search state
             query: '',
             searching: false,
@@ -156,6 +157,7 @@ class SharePointLocationPicker extends React.Component {
                 restricted: !!res?.restricted,
                 sitesError: res?.sitesError || null,
                 current,
+                account: res?.account || null,
                 selection,
                 showUrlEntry: !!res?.restricted
             });
@@ -302,7 +304,10 @@ class SharePointLocationPicker extends React.Component {
                     normalizedSelection.drive.drive_id, normalizedSelection.drive.drive_type,
                     siteLabel
                 );
-                toast.success(`Created remote "${result?.name || name}".`);
+                const acctSuffix = result?.account?.email
+                    ? ` (account: ${result.account.email})`
+                    : '';
+                toast.success(`Created remote "${result?.name || name}"${acctSuffix}.`, { autoClose: 6000 });
                 if (onConfirm) onConfirm({ ...normalizedSelection, cloneResult: result });
             } catch (e) {
                 this._safeSetState({ cloneSubmitting: false });
@@ -590,6 +595,26 @@ class SharePointLocationPicker extends React.Component {
                     )}
                     {!loading && !error && (
                         <>
+                            {this.state.account && (this.state.account.email || this.state.account.name) && (
+                                <Alert
+                                    color="info"
+                                    style={{ fontSize: '13px', padding: '8px 12px', marginBottom: '12px' }}
+                                >
+                                    <i className="fa fa-user-circle" style={{ marginRight: '6px' }} />
+                                    Using OAuth token of{' '}
+                                    <strong>{this.state.account.name || this.state.account.email}</strong>
+                                    {this.state.account.email && this.state.account.name && (
+                                        <span style={{ color: '#555' }}> ({this.state.account.email})</span>
+                                    )}
+                                    {mode === 'clone' && (
+                                        <span style={{ display: 'block', marginTop: '4px', color: '#555' }}>
+                                            The new remote will share this account's authentication —
+                                            cancel and pick a different OneDrive remote if this isn't the
+                                            account you want.
+                                        </span>
+                                    )}
+                                </Alert>
+                            )}
                             {this._renderPersonalSection()}
                             {this._renderSitesSection()}
 

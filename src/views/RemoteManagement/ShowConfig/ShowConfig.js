@@ -2,7 +2,7 @@ import React from "react";
 import {Button, Col, Row, Table, Collapse, Card, CardBody} from "reactstrap";
 import ConfigRow from "./ConfigRow";
 import {connect} from "react-redux";
-import {getConfigDump} from "../../../actions/configActions";
+import {getConfigDump, removeConfigDumpEntry} from "../../../actions/configActions";
 import * as PropTypes from "prop-types";
 import {withRouter} from "../../../utils/withRouter";
 import {getTemplates, deleteTemplate} from "../../../utils/API/director";
@@ -10,7 +10,7 @@ import {toast} from "react-toastify";
 import ConfirmModal from "../../../components/ConfirmModal";
 
 
-function RemoteRows({remotes, refreshHandle, onTemplateCreated, disabled}) {
+function RemoteRows({remotes, refreshHandle, removeRemoteOptimistic, onTemplateCreated, disabled}) {
 
     let returnMap = [];
     let curKey = 1;
@@ -19,9 +19,11 @@ function RemoteRows({remotes, refreshHandle, onTemplateCreated, disabled}) {
         if (key.endsWith('_base')) {
             continue;
         }
-        
+
         returnMap.push((<ConfigRow sequenceNumber={curKey} key={key} remoteName={key} remote={value}
-                                   refreshHandle={refreshHandle} onTemplateCreated={onTemplateCreated} disabled={disabled}/>));
+                                   refreshHandle={refreshHandle}
+                                   removeRemoteOptimistic={removeRemoteOptimistic}
+                                   onTemplateCreated={onTemplateCreated} disabled={disabled}/>));
         curKey++;
     }
     return returnMap;
@@ -331,7 +333,11 @@ class ShowConfig extends React.PureComponent {
                     </tr>
                     </thead>
                     <tbody>
-                        <RemoteRows remotes={this.props.remotes} refreshHandle={this.props.getConfigDump} onTemplateCreated={this.loadTemplates} disabled={isDisconnected}/>
+                        <RemoteRows remotes={this.props.remotes}
+                                    refreshHandle={this.props.getConfigDump}
+                                    removeRemoteOptimistic={this.props.removeConfigDumpEntry}
+                                    onTemplateCreated={this.loadTemplates}
+                                    disabled={isDisconnected}/>
                     </tbody>
                 </Table>
 
@@ -462,4 +468,4 @@ ShowConfig.propTypes = {
     error: PropTypes.object
 };
 
-export default withRouter(connect(mapStateToProps, {getConfigDump})(ShowConfig));
+export default withRouter(connect(mapStateToProps, {getConfigDump, removeConfigDumpEntry})(ShowConfig));

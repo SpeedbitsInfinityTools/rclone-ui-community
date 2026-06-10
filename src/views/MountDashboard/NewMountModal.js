@@ -100,6 +100,33 @@ const MOUNT_PRESETS = {
         mountOpt: {},
         readOnly: true,
     },
+    cloudBrowse: {
+        // Tuned for human / control-plane navigation of S3-class buckets and
+        // Azure / GCS containers that contain very large numbers of blobs at
+        // a single prefix. Cold-start listings are unavoidable on object
+        // stores (no native filesystem semantics, listings are paginated at
+        // 5000 entries / page over the network), so we trade cold latency
+        // for warm-cache speed: cache directory listings for a week, skip
+        // per-entry modtime fetches (rclone docs explicitly call this out
+        // as a major speedup for S3 / Swift), and disable change polling
+        // since none of these backends support push notify anyway.
+        //
+        // NOT for active backup IO targets: when borg / restic / rclone
+        // copy are writing to a mount, the 1-week dir cache will hide
+        // server-side deletions from them. Use the "Backup target" preset
+        // for that workload instead.
+        label: 'Cloud object-storage browser (S3 / Azure / GCS, large containers)',
+        short: 'Tuned for browsing huge object-storage containers from picker / file-explorer UIs. Aggressively caches listings (1 week), skips modtimes, disables polling. Not recommended as an active backup target — picks the wrong tradeoff for tools that need fresh state.',
+        cacheWarning: true,
+        vfsOpt: {
+            CacheMode: 3,                       // full
+            DirCacheTime: 168 * NS_PER_HOUR,    // 1 week
+            PollInterval: 0,                    // object stores have no notify
+            NoModTime: true,                    // S3 / Swift / Azure huge speedup
+        },
+        mountOpt: {},
+        readOnly: null,
+    },
 };
 
 const CACHE_MODE_OPTIONS = [

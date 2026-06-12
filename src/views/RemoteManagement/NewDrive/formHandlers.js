@@ -4,6 +4,92 @@ import {toast} from "react-toastify";
 import urls from "../../../utils/API/endpoint";
 import {NEW_DRIVE_CONFIG_REFRESH_TIMEOUT} from "../../../utils/Constants";
 
+// ---------------------------------------------------------------------------
+// Azure Blob auth-method conflict resolution
+// ---------------------------------------------------------------------------
+// rclone's azureblob backend supports many mutually-exclusive auth methods
+// (Account Key, SAS URL, connection_string, Managed Identity, env_auth /
+// default credential chain, Azure CLI, service principal, emulator, ...). The
+// wizard itself only offers Account+Key and SAS URL, but the live provider
+// schema fetched from rclone exposes the advanced fields too, and a couple of
+// vectors can poison the form values without the user typing them:
+//
+//   * `account = admin` and `client_certificate_password = <password>` —
+//     password-manager autofill recognising the rclone-ui Basic Auth login
+//     and injecting it into adjacent inputs (also mitigated with anti-autofill
+//     props in DriveParameters.js).
+//   * `use_az = true`, `use_msi = true`, `env_auth = true`, `use_emulator =
+//     true`, a `connection_string = ...`, etc. left over from template import
+//     or live-schema residue.
+//
+// In rclone, those alternative-auth fields take PRECEDENCE over the SAS-URL /
+// account-key branch, so when they leak in alongside a sas_url the credential
+// the user actually entered is silently ignored and rclone fails with
+// "account must be set: can't make service URL".
+//
+// IMPORTANT: this is NOT a whitelist that strips every unknown field. Doing so
+// would break legitimate advanced auth modes (MSI / env_auth / service
+// principal / connection string) for power users. We only remove an
+// alternative-auth field when it is ACTIVELY set AND the same payload already
+// carries an explicit static credential (sas_url, or account+key) that it
+// would override. With no static credential present, parameters pass through
+// untouched. Keep this list in sync with the Director copy in
+// rclone-director/services/param-sanitizer.service.js.
+const AZUREBLOB_CONFLICTING_AUTH_FIELDS = new Set([
+    'env_auth',
+    'use_msi', 'msi_object_id', 'msi_client_id', 'msi_mi_res_id',
+    'use_emulator',
+    'use_az',
+    'connection_string',
+    'client_id', 'client_secret', 'tenant',
+    'client_certificate_path', 'client_certificate_password',
+    'client_send_certificate_chain',
+    'username', 'password',
+    'service_principal_file',
+    'disable_instance_discovery',
+]);
+
+/**
+ * Treat a form/config value as "actively set". rclone bool fields come through
+ * as the strings "true"/"false"; empty string / "false" / "0" / "no" all mean
+ * the field is not engaged.
+ */
+function isActiveAzureParam(v) {
+    if (v === undefined || v === null) return false;
+    if (typeof v === 'boolean') return v;
+    const s = String(v).trim().toLowerCase();
+    return s !== '' && s !== 'false' && s !== '0' && s !== 'no';
+}
+
+/**
+ * Remove azureblob auth fields that contradict an explicitly-provided static
+ * credential (sas_url, or account+key). If no static credential is present the
+ * parameters are returned unchanged, so MSI / env_auth / service-principal /
+ * connection-string remotes are left intact. Returns `{ cleaned, stripped }`.
+ * `params` is treated as immutable.
+ */
+export function sanitizeAzureBlobParameters(params) {
+    const p = params || {};
+    const hasSas = isActiveAzureParam(p.sas_url);
+    const hasAccountKey = isActiveAzureParam(p.account) && isActiveAzureParam(p.key);
+    const staticCredentialPresent = hasSas || hasAccountKey;
+
+    if (!staticCredentialPresent) {
+        return { cleaned: p, stripped: [] };
+    }
+
+    const cleaned = {};
+    const stripped = [];
+    for (const [k, v] of Object.entries(p)) {
+        if (AZUREBLOB_CONFLICTING_AUTH_FIELDS.has(k) && isActiveAzureParam(v)) {
+            stripped.push(k);
+        } else {
+            cleaned[k] = v;
+        }
+    }
+    return { cleaned, stripped };
+}
+
 export function parseAzureSasInput(input) {
         const trimmed = input.trim();
         
@@ -69,6 +155,27 @@ export function parseAzureSasInput(input) {
 }
 
 /**
+ * Extract the storage account name from a SAS URL's hostname.
+ * Returns null if the URL cannot be parsed or doesn't look like a *.blob.* URL.
+ *
+ * Examples:
+ *   "https://easyzoom.blob.core.windows.net/?sv=..."  -> "easyzoom"
+ *   "https://easyzoom.blob.core.windows.net/c?sv=..." -> "easyzoom"
+ *   "https://easyzoom.blob.core.windows.net?sv=..."   -> "easyzoom"
+ */
+export function extractAzureAccountFromSasUrl(sasUrl) {
+    if (!sasUrl) return null;
+    try {
+        const u = new URL(String(sasUrl).trim());
+        if (!/\.blob\./i.test(u.hostname)) return null;
+        const first = u.hostname.split('.')[0] || '';
+        return first || null;
+    } catch (e) {
+        return null;
+    }
+}
+
+/**
  * Validate the shape of an Azure Blob `sas_url` value before saving / testing.
  *
  * The wizard's old behaviour silently saved any string the user put in `sas_url` and
@@ -83,11 +190,18 @@ export function parseAzureSasInput(input) {
  *   - container-scoped SAS (`sr=c`) without `/<container>` in the path
  *   - expired SAS (`se=` in the past)
  *
+ * Optional `remoteName` enables an account-mismatch warning: if the SAS URL points
+ * at storage account `foo` but the remote is being saved as `bar`, that's almost
+ * always a copy-paste mistake. We've seen this in the wild — a remote literally
+ * named "EasyZoom" with a SAS URL pointing at "marketaccesssuite". The warning
+ * is non-blocking because there are legitimate cases (one storage account hosting
+ * multiple logical projects, vendor-managed shared accounts, etc.).
+ *
  * Returns: { ok: boolean, error: string|null, warnings: string[] }
  * - ok=false + error  -> hard validation failure, do not save.
  * - ok=true + warnings -> save is OK, but surface warnings to the user.
  */
-export function validateAzureSasUrl(sasUrl) {
+export function validateAzureSasUrl(sasUrl, remoteName = null) {
     const result = { ok: true, error: null, warnings: [] };
     if (!sasUrl) return result;
 
@@ -171,6 +285,35 @@ export function validateAzureSasUrl(sasUrl) {
             }
         } catch (e) {
             // ignore parse failures
+        }
+    }
+
+    // Account-name vs remote-name mismatch warning (non-blocking).
+    // A real-world failure mode: user names a remote "EasyZoom" but pastes
+    // a SAS URL for a different account ("marketaccesssuite"). Saving works,
+    // listing works, but every label / log / mount-point in the UI shows
+    // "EasyZoom" while the data is actually coming from somewhere else.
+    if (remoteName) {
+        const sasAccount = extractAzureAccountFromSasUrl(trimmed);
+        if (sasAccount) {
+            const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+            const normRemote = norm(remoteName);
+            const normAccount = norm(sasAccount);
+            // Warn only if the names are wildly different (no substring overlap
+            // either way). One being a prefix/suffix of the other is OK —
+            // people commonly name remotes after the company / account anyway.
+            const overlaps =
+                normRemote === '' || normAccount === '' ||
+                normRemote.includes(normAccount) || normAccount.includes(normRemote);
+            if (!overlaps) {
+                result.warnings.push(
+                    `Heads-up: this SAS URL points at the storage account "${sasAccount}", ` +
+                    `but the remote is being saved as "${remoteName}". ` +
+                    `Saving still works, but every reference in the UI will say "${remoteName}" while ` +
+                    `the data lives in "${sasAccount}" — usually a sign the wrong SAS was pasted. ` +
+                    `If that's intentional you can ignore this; if not, rename the remote (or paste the right SAS) before saving.`
+                );
+            }
         }
     }
 
@@ -589,7 +732,7 @@ export async function handleSubmit(e) {
               const finalSas = finalParameterValues.sas_url || '';
               const hasAccountKey = !!(finalParameterValues.account && finalParameterValues.key);
               if (finalSas && !hasAccountKey) {
-                  const v = this.validateAzureSasUrl(finalSas);
+                  const v = this.validateAzureSasUrl(finalSas, this.state.driveName);
                   if (!v.ok) {
                       toast.error(`Azure SAS URL is invalid: ${v.error}`, { autoClose: 12000 });
                       this.setState({ saving: false });
@@ -598,6 +741,25 @@ export async function handleSubmit(e) {
                   if (v.warnings.length > 0) {
                       v.warnings.forEach(w => toast.warn(`Azure SAS: ${w}`, { autoClose: 12000 }));
                   }
+              }
+
+              // Resolve auth-method conflicts: when the user supplied a SAS URL
+              // or account+key, remove any *active* alternative-auth fields
+              // (env_auth/use_msi/connection_string/service-principal/...) that
+              // would override it. Advanced single-method configs are untouched.
+              // See sanitizeAzureBlobParameters for the full rationale.
+              {
+                  const { cleaned, stripped } = sanitizeAzureBlobParameters(finalParameterValues);
+                  if (stripped.length > 0) {
+                      console.warn('[NewDrive] Removed conflicting azureblob auth fields:', stripped);
+                      toast.warn(
+                          `Removed ${stripped.length} conflicting Azure auth field(s) that would override your ` +
+                          `SAS URL / account key: ${stripped.join(', ')}. ` +
+                          `(These usually come from password-manager autofill or an imported template.)`,
+                          { autoClose: 10000 }
+                      );
+                  }
+                  finalParameterValues = cleaned;
               }
           }
 

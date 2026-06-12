@@ -3,6 +3,7 @@ import {findFromConfig, isEmpty, supportsOAuth} from "../../../utils/Tools";
 import {toast} from "react-toastify";
 import urls from "../../../utils/API/endpoint";
 import {getTemplates, getTemplate} from "../../../utils/API/director";
+import {sanitizeAzureBlobParameters} from "./formHandlers";
 
 export async function testRemoteConnection() {
         const {driveName, drivePrefix, formValues} = this.state;
@@ -84,7 +85,7 @@ export async function testRemoteConnection() {
                 const finalSas = finalParameterValues.sas_url || '';
                 const hasAccountKey = !!(finalParameterValues.account && finalParameterValues.key);
                 if (finalSas && !hasAccountKey && typeof this.validateAzureSasUrl === 'function') {
-                    const v = this.validateAzureSasUrl(finalSas);
+                    const v = this.validateAzureSasUrl(finalSas, driveName);
                     if (!v.ok) {
                         this.setState(prev => ({
                             testingConnection: false,
@@ -97,6 +98,23 @@ export async function testRemoteConnection() {
                         v.warnings.forEach(w => toast.warn(`Azure SAS: ${w}`, { autoClose: 12000 }));
                     }
                 }
+
+                // Resolve auth-method conflicts before save — same logic as in
+                // handleSubmit (see formHandlers.js). The test path also writes
+                // the remote to rclone.conf via config/create, so without this a
+                // stray active `env_auth=true` / `use_msi` etc. alongside the
+                // SAS URL would still corrupt the saved config. Single-method
+                // advanced configs (no SAS / account+key) are left untouched.
+                const { cleaned: azCleaned, stripped: azStripped } = sanitizeAzureBlobParameters(finalParameterValues);
+                if (azStripped.length > 0) {
+                    console.warn('[testConnection] Removed conflicting azureblob auth fields:', azStripped);
+                    toast.warn(
+                        `Removed ${azStripped.length} conflicting Azure auth field(s) that would override your ` +
+                        `SAS URL / account key: ${azStripped.join(', ')}.`,
+                        { autoClose: 10000 }
+                    );
+                }
+                finalParameterValues = azCleaned;
             }
 
             let data = {

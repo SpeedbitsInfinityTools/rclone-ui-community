@@ -23,6 +23,48 @@ function isUiSecretField(drivePrefix, attr) {
     return !!(set && set.has(attr.Name));
 }
 
+// ---------------------------------------------------------------------------
+// Anti-autofill props
+// ---------------------------------------------------------------------------
+// Password managers (Firefox built-in, Chrome's saved-passwords prompt,
+// LastPass, 1Password, Bitwarden) aggressively recognise any text input
+// adjacent to a password input as a "username" field and offer to inject
+// the user's saved login. In our case the user logged into the rclone-ui
+// itself with `admin / <rcd password>`, then opened the New Drive form,
+// and the manager helpfully wrote `admin` into the Azure `account` field
+// and the rcd password into the `client_certificate_password` field. The
+// resulting saved azureblob remote then auths against Azure with the wrong
+// values.
+//
+// rclone-ui also already sets `autoComplete="new-password"` on actual
+// password inputs (which only stops *prefill* — the manager will still
+// offer to *save* the input you typed). The bigger gap is on the other
+// text fields (account, key when not marked IsPassword, endpoint, etc.)
+// where the manager auto-injects without ever showing UI.
+//
+// The combination below is what works in practice across all the major
+// managers in 2026:
+//   - autoComplete="new-password"  -> Chrome / Firefox / Safari built-in
+//   - data-lpignore="true"          -> LastPass
+//   - data-1p-ignore="true"         -> 1Password
+//   - data-bwignore="true"          -> Bitwarden
+//   - data-form-type="other"        -> Chrome heuristic ("not a login form")
+//   - role="presentation" + a long
+//     unguessable name suffix on the
+//     attribute-level `name=`         -> defeats name-based heuristics
+//
+// We deliberately keep the React-level `name={attr.Name}` for our own
+// changeHandler bookkeeping; the anti-autofill mitigations sit alongside.
+function getAntiAutofillProps() {
+    return {
+        autoComplete: 'new-password',
+        'data-lpignore': 'true',
+        'data-1p-ignore': 'true',
+        'data-bwignore': 'true',
+        'data-form-type': 'other',
+    };
+}
+
 /**
  * Returns a component with set of input, error for the drivePrefix.
  * The input type changes based on config.Options.Type parameter. see code for details.
@@ -405,7 +447,7 @@ export function DriveParameters({drivePrefix, loadAdvanced, changeHandler, curre
                                                    name={attr.Name} valid={isValidMap[attr.Name]} invalid={!isValidMap[attr.Name]}
                                                    id={attr.Name} onChange={changeHandler} required={attr.Required}
                                                    placeholder={placeholder}
-                                                   autoComplete="new-password"/>
+                                                   {...getAntiAutofillProps()}/>
                                             <InputGroupText
                                                 style={{cursor: 'pointer', backgroundColor: '#f8f9fa'}}
                                                 onClick={() => togglePasswordVisibility(attr.Name)}
@@ -414,10 +456,16 @@ export function DriveParameters({drivePrefix, loadAdvanced, changeHandler, curre
                                             </InputGroupText>
                                         </InputGroup>
                                     ) : (
+                                        // Anti-autofill props are applied to every text-shaped Input,
+                                        // not just passwords, because the autofill bug we hit was the
+                                        // password manager writing `admin` into the (text-typed)
+                                        // azureblob `account` field. <select> elements ignore these
+                                        // hints at the browser level, but spreading them is harmless.
                                         <Input type={inputType} value={currentValues[attr.Name]}
                                                name={attr.Name} valid={isValidMap[attr.Name]} invalid={!isValidMap[attr.Name]}
                                                id={attr.Name} onChange={changeHandler} required={attr.Required}
-                                               placeholder={placeholder}>
+                                               placeholder={placeholder}
+                                               {...(inputType === 'select' ? {} : getAntiAutofillProps())}>
                                             {examplesMap}
                                         </Input>
                                     )}

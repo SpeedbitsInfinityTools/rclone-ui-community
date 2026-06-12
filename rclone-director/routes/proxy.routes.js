@@ -10,6 +10,7 @@ const FormData = require('form-data');
 const auth = require('../auth');
 const { loadServers } = require('../services/data.service');
 const { axiosInstance } = require('../services/server.service');
+const { hasSanitizer, sanitizeRcloneParameters } = require('../services/param-sanitizer.service');
 const ENABLE_PROXY_REQUEST_LOG =
     process.env.DIRECTOR_PROXY_LOG === 'true' ||
     process.env.RCLONE_DIRECTOR_PROXY_LOG === 'true';
@@ -283,6 +284,55 @@ router.all('/*', auth.requireAdminAuth, upload.any(), async (req, res) => {
             }
         }
         
+        // ---------------------------------------------------------------
+        // Server-side auth-method conflict resolution for config writes.
+        // Mirrors the UI logic (formHandlers.js). This does NOT strip unknown
+        // fields — legitimate advanced azureblob auth modes (MSI, env_auth,
+        // service principal, connection string) pass through untouched. It only
+        // removes auth selectors that ACTIVELY contradict an explicit static
+        // credential the same request provided (e.g. env_auth=true / use_msi
+        // alongside a sas_url), which would otherwise hijack rclone's auth
+        // dispatch and break the credential the caller intended to use.
+        // See services/param-sanitizer.service.js for the full rationale.
+        // ---------------------------------------------------------------
+        if (
+            (rclonePath === 'config/create' || rclonePath === 'config/update') &&
+            req.body && typeof req.body === 'object' &&
+            req.body.parameters && typeof req.body.parameters === 'object'
+        ) {
+            // Determine the backend type. config/create carries it at the top
+            // level; config/update usually doesn't, so fall back to the value
+            // nested in parameters, then to a config/get lookup.
+            let remoteType = req.body.type || req.body.parameters.type || null;
+            if (!remoteType && req.body.name) {
+                try {
+                    const cfgResp = await axiosInstance.post(
+                        `${server.url}/config/get`,
+                        { name: req.body.name },
+                        { auth: { username: server.username, password: password }, timeout: 5000 }
+                    );
+                    const cfg = cfgResp.data || {};
+                    remoteType = cfg.type || (cfg.parameters && cfg.parameters.type) || null;
+                } catch (lookupError) {
+                    // Non-fatal: if we can't resolve the type we forward as-is
+                    // rather than risk blocking a legitimate write.
+                    console.debug(`[PROXY] config type lookup failed for "${req.body.name}":`, lookupError.message);
+                }
+            }
+
+            if (hasSanitizer(remoteType)) {
+                const { cleaned, stripped } = sanitizeRcloneParameters(remoteType, req.body.parameters);
+                if (stripped.length > 0) {
+                    console.warn(
+                        `[PROXY] Removed ${stripped.length} conflicting ${remoteType} auth field(s) ` +
+                        `from ${rclonePath} for "${req.body.name}" (an explicit credential was also provided): ` +
+                        `${stripped.join(', ')}`
+                    );
+                    req.body.parameters = cleaned;
+                }
+            }
+        }
+
         // Check if this is a file upload request
         const isFileUpload = rclonePath.includes('operations/uploadfile') && req.files && req.files.length > 0;
         
